@@ -9,6 +9,31 @@ import plotly.graph_objects as go
 import streamlit as st
 from google.oauth2.service_account import Credentials
 
+# Встановлюємо кастомний CSS для однакового шрифту метрик
+st.markdown("""
+<style>
+    .stMetric label {
+        font-size: 0.9rem !important;
+        font-weight: 500 !important;
+    }
+    .stMetric div[data-testid="stMetricValue"] {
+        font-size: 1.2rem !important;
+        font-weight: 600 !important;
+    }
+    .stMetric div[data-testid="stMetricDelta"] {
+        font-size: 0.8rem !important;
+    }
+    /* Для колонок з кастомним HTML (Порівняння, Найактивніша операція) */
+    .metric-custom {
+        font-size: 1.2rem !important;
+        font-weight: 600 !important;
+    }
+    .metric-custom-small {
+        font-size: 0.75rem !important;
+        line-height: 1.4 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 st.set_page_config(
     page_title="KPO Dashboard",
@@ -503,9 +528,8 @@ with tab1:
     with col8:
         if busiest_op:
             st.markdown("**Найактивніша операція**")
-            # Збільшений шрифт для операції
             st.markdown(
-                f"<p style='font-size:1.1rem; margin:0;'>{busiest_op} — {busiest_op_val:,.0f}</p>",
+                f"<p class='metric-custom'>{busiest_op} — {busiest_op_val:,.0f}</p>",
                 unsafe_allow_html=True
             )
         else:
@@ -518,15 +542,14 @@ with tab1:
                 parts = comparison_text.split("  ")
                 for part in parts:
                     st.markdown(
-                        f"<p style='font-size:0.75rem; margin:0; line-height:1.4;'>{part}</p>",
+                        f"<p class='metric-custom-small'>{part}</p>",
                         unsafe_allow_html=True
                     )
             else:
                 st.markdown(
-                    "<p style='font-size:0.75rem; margin:0;'>—</p>",
+                    "<p class='metric-custom-small'>—</p>",
                     unsafe_allow_html=True
                 )
-            # Прибрано підпис "Показується лише для одного місяця в режимі 'Тотал'"
         else:
             st.metric("Порівняння", "—", help="Доступно лише для одного місяця в режимі 'Тотал'")
 
