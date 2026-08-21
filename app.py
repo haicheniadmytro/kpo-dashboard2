@@ -176,7 +176,6 @@ def load_data():
 # --- Функції для розрахунку додаткових метрик ---
 
 def calc_peak_min_avg(df):
-    """Розраховує пік, мінімум, середнє за день та співвідношення пік/середнє."""
     daily = df.groupby("date")["value"].sum()
     if daily.empty:
         return 0, 0, 0, 0
@@ -188,7 +187,6 @@ def calc_peak_min_avg(df):
 
 
 def calc_busiest_weekday(df):
-    """Повертає день тижня з найбільшою середньою кількістю операцій."""
     if df.empty:
         return None, None
     daily = df.groupby("date")["value"].sum().reset_index()
@@ -200,7 +198,6 @@ def calc_busiest_weekday(df):
 
 
 def calc_busiest_operation(df):
-    """Повертає операцію з найбільшою сумарною кількістю."""
     if df.empty or df["operation"].nunique() == 0:
         return None, None
     ops = df[df["operation"] != "Тотал"]
@@ -213,7 +210,6 @@ def calc_busiest_operation(df):
 
 
 def calc_stability(df):
-    """Розраховує коефіцієнт варіації (CV) для денних сум."""
     daily = df.groupby("date")["value"].sum()
     if daily.empty:
         return 0, 0, 0, "Немає даних"
@@ -229,11 +225,7 @@ def calc_stability(df):
     return mean, std, cv, interpretation
 
 
-def detect_anomalies(df, window=7, threshold=2.0):
-    """
-    Визначає аномальні дні на основі ковзного середнього та std.
-    Повертає df з доданими колонками: rolling_avg, rolling_std, z_score, is_anomaly.
-    """
+def detect_anomalies(df, window=14, threshold=1.5):
     if df.empty:
         return pd.DataFrame()
     daily = df.groupby("date")["value"].sum().reset_index()
@@ -244,16 +236,11 @@ def detect_anomalies(df, window=7, threshold=2.0):
     daily["rolling_std"] = daily["value"].rolling(window=window, min_periods=1, center=True).std().fillna(0)
     daily["z_score"] = (daily["value"] - daily["rolling_avg"]) / daily["rolling_std"].replace(0, 1)
     daily["is_anomaly"] = abs(daily["z_score"]) > threshold
-    # Виключаємо нульові значення, щоб не вважати їх аномаліями
     daily = daily[(daily["value"] > 0)]
     return daily
 
 
 def forecast_scenarios(df, current_month):
-    """
-    Базовий, мінімальний та оптимістичний прогноз для поточного місяця.
-    Повертає словник зі сценаріями.
-    """
     if df.empty or current_month not in df["month"].values:
         return None
 
@@ -342,7 +329,6 @@ all_ops = [op for op in OPERATIONS if op in df["operation"].unique()]
 if operation_mode == "Тотал":
     selected_operations = ["Тотал"]
 else:
-    # За замовчуванням обираємо всі операції
     default_ops = all_ops if all_ops else []
     selected_operations = st.sidebar.multiselect(
         "Операції",
@@ -382,8 +368,19 @@ if filtered.empty:
 # --- Розрахунок базових метрик ---
 daily_total = filtered.groupby("date")["value"].sum()
 total_value = daily_total.sum()
-num_days = daily_total.count()  # кількість унікальних днів у вибірці
-daily_avg = total_value / num_days if num_days > 0 else 0  # виправлено: total / кількість днів
+
+# Кількість календарних днів у вибраному періоді
+if len(selected_months) == 1:
+    period = pd.Period(selected_months[0])
+    today = pd.Timestamp.now().normalize()
+    if period.start_time <= today <= period.end_time:
+        num_days = (today - period.start_time).days + 1
+    else:
+        num_days = period.days_in_month
+else:
+    num_days = sum(pd.Period(m).days_in_month for m in selected_months)
+
+daily_avg = total_value / num_days if num_days > 0 else 0
 
 peak = daily_total.max() if not daily_total.empty else 0
 min_val = daily_total.min() if not daily_total.empty else 0
@@ -468,14 +465,13 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Динаміка", "�
 # TAB 1: OVERVIEW
 # ============================================================
 with tab1:
-    # --- KPI рядок ---
     col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
         st.metric("Всього", f"{total_value:,.0f}", help="Загальна кількість операцій за вибраний період")
 
     with col2:
-        st.metric("Середнє за день", f"{daily_avg:.1f}", help="Сумарна кількість поділена на кількість днів у вибірці")
+        st.metric("Середнє за день", f"{daily_avg:.1f}", help=f"Сумарна кількість поділена на {num_days} календарних днів у вибраному періоді")
 
     with col3:
         if forecast:
@@ -492,7 +488,6 @@ with tab1:
     with col6:
         st.metric("Пік / середнє", f"{peak_avg_ratio:.2f}×", help="У скільки разів пік перевищує середнє значення")
 
-    # Другий рядок KPI
     col7, col8, col9, col10 = st.columns(4)
 
     with col7:
@@ -506,11 +501,16 @@ with tab1:
 
     with col8:
         if busiest_op:
-            st.metric("Найактивніша операція", f"{busiest_op} — {busiest_op_val:,.0f}", help="Операція з найбільшою загальною кількістю")
+            st.markdown("**Найактивніша операція**")
+            st.markdown(
+                f"<p style='font-size:0.9rem; margin:0;'>{busiest_op} — {busiest_op_val:,.0f}</p>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.metric("Найактивніша операція", "—")
 
     with col9:
         if len(selected_months) == 1 and operation_mode == "Тотал":
-            # Зменшуємо шрифт для порівняння
             st.markdown("**Порівняння**")
             if comparison_text != "—":
                 parts = comparison_text.split("  ")
@@ -524,8 +524,9 @@ with tab1:
                     "<p style='font-size:0.75rem; margin:0;'>—</p>",
                     unsafe_allow_html=True
                 )
+            st.caption("Показується лише для одного місяця в режимі 'Тотал'")
         else:
-            st.metric("Порівняння", "—")
+            st.metric("Порівняння", "—", help="Доступно лише для одного місяця в режимі 'Тотал'")
 
     with col10:
         st.metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—",
@@ -538,6 +539,8 @@ with tab1:
 
     if operation_mode == "Тотал":
         daily = filtered.groupby("date")["value"].sum().reset_index()
+        # Форматуємо дати для відображення
+        daily["date_str"] = daily["date"].dt.strftime("%d.%m")
         fig_overview = px.line(
             daily,
             x="date",
@@ -545,6 +548,11 @@ with tab1:
             markers=True,
             labels={"date": "Дата", "value": "Кількість"},
             color_discrete_sequence=["blue"],
+        )
+        # Перейменовуємо вісь X з форматом дат
+        fig_overview.update_xaxes(
+            tickformat="%d.%m",
+            title_text="Дата"
         )
         if smooth_enabled:
             daily["value_smooth"] = daily["value"].rolling(window=smooth_window, min_periods=1, center=True).mean()
@@ -555,7 +563,7 @@ with tab1:
                 name=f"Ковзне середнє ({smooth_window} дн.)",
                 line=dict(color="orange", width=3),
             )
-        anomalies = detect_anomalies(filtered, window=7, threshold=2.0)
+        anomalies = detect_anomalies(filtered, window=14, threshold=1.5)
         if not anomalies.empty:
             anomaly_points = anomalies[anomalies["is_anomaly"]]
             if not anomaly_points.empty:
@@ -575,6 +583,7 @@ with tab1:
             markers=True,
             labels={"date": "Дата", "value": "Кількість", "operation": "Операція"},
         )
+        fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
     fig_overview.update_layout(
         height=420,
@@ -628,6 +637,7 @@ with tab1:
                 labels={"date": "Дата", "cumulative": "Накопичена кількість", "type": ""},
                 color_discrete_map={"Факт": "blue", "Прогноз": "orange"}
             )
+            fig_forecast.update_xaxes(tickformat="%d.%m", title_text="Дата")
             fig_forecast.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
             st.plotly_chart(fig_forecast, use_container_width=True)
         else:
@@ -649,6 +659,7 @@ with tab2:
             labels={"date": "Дата", "value": "Кількість"},
             title="Щоденна динаміка"
         )
+        fig_daily_detailed.update_xaxes(tickformat="%d.%m", title_text="Дата")
         if smooth_enabled:
             daily["value_smooth"] = daily["value"].rolling(window=smooth_window, min_periods=1, center=True).mean()
             fig_daily_detailed.add_scatter(
@@ -658,7 +669,7 @@ with tab2:
                 name=f"Ковзне середнє ({smooth_window} дн.)",
                 line=dict(color="orange", width=3),
             )
-        anomalies = detect_anomalies(filtered, window=7, threshold=2.0)
+        anomalies = detect_anomalies(filtered, window=14, threshold=1.5)
         if not anomalies.empty:
             anomaly_points = anomalies[anomalies["is_anomaly"]]
             if not anomaly_points.empty:
@@ -679,6 +690,7 @@ with tab2:
             labels={"date": "Дата", "value": "Кількість", "operation": "Операція"},
             title="Динаміка вибраних операцій"
         )
+        fig_daily_detailed.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
     fig_daily_detailed.update_layout(
         height=400,
@@ -732,28 +744,30 @@ with tab2:
         markers=True,
         labels={"date": "Дата", "cumulative": "Накопичена кількість"},
     )
+    fig_cum.update_xaxes(tickformat="%d.%m", title_text="Дата")
     fig_cum.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_cum, use_container_width=True)
 
     # Аномальні дні
     st.subheader("🔍 Аномальні дні")
-    anomalies = detect_anomalies(filtered, window=7, threshold=2.0)
+    anomalies = detect_anomalies(filtered, window=14, threshold=1.5)
     if not anomalies.empty:
         anomaly_points = anomalies[anomalies["is_anomaly"]]
         if not anomaly_points.empty:
             anomaly_points = anomaly_points.copy()
             anomaly_points["date_str"] = anomaly_points["date"].dt.strftime("%d.%m.%Y")
             anomaly_points["deviation"] = ((anomaly_points["value"] - anomaly_points["rolling_avg"]) / anomaly_points["rolling_avg"] * 100).round(1)
-            anomaly_points["type"] = anomaly_points["deviation"].apply(lambda x: "🔴 Високий" if x > 0 else "🔵 Низький")
+            anomaly_points["type"] = anomaly_points["deviation"].apply(lambda x: "🔴 Високий" if x > 10 else "🔵 Низький" if x < -10 else "🟡 Помірний")
             anomaly_points = anomaly_points.sort_values("date", ascending=False)
             st.dataframe(
-                anomaly_points[["date_str", "value", "rolling_avg", "deviation", "type"]],
+                anomaly_points[["date_str", "value", "rolling_avg", "deviation", "type", "z_score"]],
                 column_config={
                     "date_str": "Дата",
                     "value": "Значення",
-                    "rolling_avg": "Середнє (вікно)",
+                    "rolling_avg": "Середнє (14 днів)",
                     "deviation": "Відхилення, %",
-                    "type": "Тип"
+                    "type": "Тип",
+                    "z_score": "Z-score"
                 },
                 use_container_width=True,
                 hide_index=True
@@ -761,7 +775,7 @@ with tab2:
         else:
             st.info("Аномальних днів не виявлено.")
     else:
-        st.info("Недостатньо даних для виявлення аномалій (потрібно щонайменше 7 днів з ненульовими значеннями).")
+        st.info("Недостатньо даних для виявлення аномалій (потрібно щонайменше 14 днів з ненульовими значеннями).")
 
 # ============================================================
 # TAB 3: ОПЕРАЦІЇ
@@ -773,7 +787,6 @@ with tab3:
     if ops_data.empty:
         st.info("Немає даних про окремі операції для вибраного періоду.")
     else:
-        # Структура операцій
         st.subheader("📊 Структура операцій (за період)")
         ops_structure = ops_data.groupby("operation")["value"].sum().reset_index()
         ops_structure = ops_structure.sort_values("value", ascending=False)
@@ -791,10 +804,13 @@ with tab3:
             title="Структура за період"
         )
         fig_ops_structure.update_traces(textposition="outside")
-        fig_ops_structure.update_layout(height=360, margin=dict(l=10, r=10, t=20, b=10))
+        fig_ops_structure.update_layout(
+            height=360,
+            margin=dict(l=10, r=10, t=20, b=10),
+            yaxis={"categoryorder": "total descending"}
+        )
         st.plotly_chart(fig_ops_structure, use_container_width=True)
 
-        # Stacked chart
         st.subheader("📈 Динаміка структури операцій по місяцях")
         ops_monthly = ops_data.groupby(["month", "operation"])["value"].sum().reset_index()
         ops_monthly["month_label"] = ops_monthly["month"].apply(lambda x: pd.Period(x).strftime("%m.%Y"))
@@ -810,7 +826,6 @@ with tab3:
         fig_stacked.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10))
         st.plotly_chart(fig_stacked, use_container_width=True)
 
-        # Pareto
         st.subheader("📊 Pareto аналіз операцій")
         pareto_data = ops_structure.copy().sort_values("value", ascending=False)
         pareto_data["cumulative_percent"] = pareto_data["percent"].cumsum()
@@ -844,7 +859,6 @@ with tab3:
         )
         st.plotly_chart(fig_pareto, use_container_width=True)
 
-        # Порівняння вибраних операцій
         if operation_mode != "Тотал" and len(selected_operations) > 1:
             st.subheader("📈 Порівняння вибраних операцій")
             fig_compare_ops = px.line(
@@ -856,6 +870,7 @@ with tab3:
                 labels={"date": "Дата", "value": "Кількість", "operation": "Операція"},
                 title="Динаміка вибраних операцій"
             )
+            fig_compare_ops.update_xaxes(tickformat="%d.%m", title_text="Дата")
             fig_compare_ops.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10))
             st.plotly_chart(fig_compare_ops, use_container_width=True)
 
@@ -865,7 +880,6 @@ with tab3:
 with tab4:
     st.subheader("📅 Аналіз навантаження")
 
-    # 1. Середнє навантаження по днях тижня
     st.subheader("📊 Середнє навантаження за днями тижня")
     daily_sum = filtered.groupby("date")["value"].sum().reset_index()
     daily_sum["weekday_ua"] = daily_sum["date"].dt.day_name().map({
@@ -889,7 +903,6 @@ with tab4:
     fig_weekday_avg.update_layout(height=360, margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_weekday_avg, use_container_width=True)
 
-    # 2. Будні vs вихідні
     st.subheader("📅 Будні vs вихідні")
     week_data = (
         filtered.assign(
@@ -918,7 +931,6 @@ with tab4:
     fig_week.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_week, use_container_width=True)
 
-    # 3. Теплова карта навантаження (виправлена)
     st.subheader("🌡️ Теплова карта навантаження")
     daily_heat = filtered.groupby("date")["value"].sum().reset_index()
     daily_heat["month_label"] = daily_heat["date"].dt.strftime("%m.%Y")
@@ -930,8 +942,6 @@ with tab4:
     heat_pivot = heat_data.pivot(index="month_label", columns="weekday_ua", values="value").fillna(0)
     order = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
     heat_pivot = heat_pivot.reindex(columns=order)
-    # Сортуємо індекси (місяці) за датою без використання PeriodIndex
-    # Перетворюємо індекс на рядки у форматі "MM.YYYY" і сортуємо
     def sort_months(month_str):
         try:
             return datetime.strptime(month_str, "%m.%Y")
@@ -950,7 +960,6 @@ with tab4:
     fig_heatmap.update_layout(height=450, margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_heatmap, use_container_width=True)
 
-    # 4. Стабільність навантаження
     st.subheader("📊 Стабільність навантаження")
     col1, col2, col3 = st.columns(3)
     col1.metric("Середнє за день", f"{mean:.1f}" if mean > 0 else "—")
@@ -958,7 +967,6 @@ with tab4:
     col3.metric("Коефіцієнт варіації (CV)", f"{cv:.1f}%" if cv > 0 else "—",
                 help="Коефіцієнт варіації: <15% - низька, 15-30% - середня, >30% - висока варіативність")
 
-    # 5. Пік / середнє
     st.subheader("📈 Співвідношення пік / середнє")
     st.metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—",
               help="У скільки разів максимальне денне значення перевищує середнє")
