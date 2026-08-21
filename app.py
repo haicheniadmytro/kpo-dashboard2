@@ -151,10 +151,8 @@ def load_data():
     if df_raw.empty:
         raise ValueError("Не знайдено деталізованих даних у Google Таблиці.")
 
-    # Додаємо метадані для дат
     date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend"]].drop_duplicates("date")
 
-    # Групуємо за датою та операцією, сумуючи значення
     df_grouped = (
         df_raw.groupby(["date", "operation"], as_index=False)["value"]
         .sum()
@@ -163,7 +161,6 @@ def load_data():
 
     df = df_grouped.merge(date_metadata, on="date", how="left")
 
-    # Додаємо "Тотал"
     total = (
         df.groupby("date", as_index=False)["value"]
         .sum()
@@ -240,7 +237,6 @@ smooth_window = 7
 if smooth_enabled:
     smooth_window = st.sidebar.selectbox("Вікно згладжування (дні)", [3, 5, 7, 14], index=2)
 
-# Фільтруємо дані
 filtered = df[
     df["year"].isin(selected_years)
     & df["month"].isin(selected_months)
@@ -255,9 +251,7 @@ if filtered.empty:
 total_value = filtered["value"].sum()
 daily_avg = filtered.groupby("date")["value"].sum().mean()
 
-# Середнє за будні (is_weekend == False)
 daily_avg_weekday = filtered[filtered["is_weekend"] == False].groupby("date")["value"].sum().mean()
-# Середнє за вихідні (is_weekend == True)
 daily_avg_weekend = filtered[filtered["is_weekend"] == True].groupby("date")["value"].sum().mean()
 
 forecast = None
@@ -271,7 +265,6 @@ if len(selected_months) == 1:
             avg_so_far = sum_so_far / days_passed
             forecast = avg_so_far * current_period.days_in_month
 
-# Порівняння (якщо вибрано рівно 1 місяць)
 comparison_parts = []
 if len(selected_months) == 1:
     current_period = pd.Period(selected_months[0])
@@ -300,7 +293,6 @@ if len(selected_months) == 1:
     if delta_prev is not None:
         comparison_parts.append(f"Попер. міс: {format_delta(delta_prev)}")
 
-    # До аналогічного місяця минулого року
     year_prev = current_period.year - 1
     month_num = current_period.month
     prev_year_period = pd.Period(year=year_prev, month=month_num, freq="M")
@@ -333,7 +325,6 @@ if len(selected_months) == 1:
 
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
-# Підготовка рядків для середніх
 avg_all = f"{daily_avg:.1f}" if not pd.isna(daily_avg) else "—"
 avg_wd = f"{daily_avg_weekday:.1f}" if not pd.isna(daily_avg_weekday) else "—"
 avg_we = f"{daily_avg_weekend:.1f}" if not pd.isna(daily_avg_weekend) else "—"
@@ -475,35 +466,42 @@ with right:
     )
     st.plotly_chart(fig_mix, use_container_width=True)
 
-# Weekday/weekend
+# --- Оновлений графік: Будні vs вихідні з відсотками ---
 st.subheader("📅 Будні vs вихідні")
 
-week = (
+week_data = (
     filtered.assign(
         period_type=filtered["is_weekend"].map(
             {False: "Будні", True: "Вихідні"}
         )
     )
     .groupby(["month", "period_type"], as_index=False)["value"]
-    .mean()
+    .sum()  # сума за місяць, а не середнє
 )
 
-week["month_label"] = week["month"].apply(
+# Додаємо загальну суму за місяць і відсотки
+week_data["month_total"] = week_data.groupby("month")["value"].transform("sum")
+week_data["percent"] = (week_data["value"] / week_data["month_total"] * 100).round(1)
+week_data["text"] = week_data["percent"].astype(str) + "%"
+
+week_data["month_label"] = week_data["month"].apply(
     lambda x: pd.Period(x).strftime("%m.%Y")
 )
 
 fig_week = px.bar(
-    week,
+    week_data,
     x="month_label",
     y="value",
     color="period_type",
     barmode="group",
+    text="text",
     labels={
         "month_label": "Місяць",
-        "value": "Середнє за день",
+        "value": "Кількість",
         "period_type": "",
     },
 )
+fig_week.update_traces(textposition="outside")
 fig_week.update_layout(
     height=380,
     margin=dict(l=10, r=10, t=20, b=10),
