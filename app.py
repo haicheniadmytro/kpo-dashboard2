@@ -106,7 +106,6 @@ def load_data():
                 month_rows.append((idx, parsed[0], parsed[1]))
 
         for month_idx, (header_row, month, year) in enumerate(month_rows):
-            # Знаходимо початок деталізованих операцій
             detail_start = None
             for r in range(header_row + 1, min(header_row + 30, len(values))):
                 if len(values[r]) > 3 and values[r][3] in OPERATIONS:
@@ -134,13 +133,6 @@ def load_data():
                     value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
-                    # Визначаємо, чи це TRUE (парна колонка, починаючи з D)
-                    # Ми читаємо з E (індекс 4), тому:
-                    # day_idx=0 -> E (непарна) -> FALSE
-                    # day_idx=1 -> F (парна) -> TRUE
-                    # Отже, TRUE відповідає непарним індексам (1, 3, 5, ...)
-                    is_true_col = (day_idx % 2 == 1)
-
                     records.append(
                         {
                             "date": date,
@@ -151,7 +143,6 @@ def load_data():
                             "month_name": date.strftime("%b %Y"),
                             "weekday": date.day_name(),
                             "is_weekend": date.weekday() >= 5,
-                            "is_true_col": is_true_col,
                         }
                     )
 
@@ -180,26 +171,6 @@ def load_data():
     )
     total = total.merge(date_metadata, on="date", how="left")
     df = pd.concat([df, total], ignore_index=True)
-
-    # Агрегуємо суми TRUE і FALSE з df_raw
-    true_false_agg = (
-        df_raw.groupby(["date", "operation", "is_true_col"])["value"]
-        .sum()
-        .unstack(fill_value=0)
-        .reset_index()
-    )
-    # Перейменовуємо колонки: is_true_col=False -> sum_false, is_true_col=True -> sum_true
-    true_false_agg.columns = ["date", "operation", "sum_false", "sum_true"]
-    # Якщо якоїсь колонки немає, додаємо
-    if "sum_true" not in true_false_agg.columns:
-        true_false_agg["sum_true"] = 0
-    if "sum_false" not in true_false_agg.columns:
-        true_false_agg["sum_false"] = 0
-
-    # Додаємо суми TRUE/FALSE до основного df
-    df = df.merge(true_false_agg, on=["date", "operation"], how="left")
-    df["sum_true"] = df["sum_true"].fillna(0)
-    df["sum_false"] = df["sum_false"].fillna(0)
 
     return df
 
@@ -282,8 +253,6 @@ if filtered.empty:
 
 # --- Розрахунок основних метрик ---
 total_value = filtered["value"].sum()
-
-# Середнє за день (всі дні)
 daily_avg = filtered.groupby("date")["value"].sum().mean()
 
 # Середнє за будні (is_weekend == False)
@@ -364,19 +333,13 @@ if len(selected_months) == 1:
 
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
-# --- Коефіцієнт погоджень (sum_true / (sum_true + sum_false)) ---
-sum_true_total = filtered["sum_true"].sum()
-sum_false_total = filtered["sum_false"].sum()
-total_ratio = sum_true_total + sum_false_total
-approval_rate = (sum_true_total / total_ratio * 100) if total_ratio > 0 else 0
-
 # Підготовка рядків для середніх
 avg_all = f"{daily_avg:.1f}" if not pd.isna(daily_avg) else "—"
 avg_wd = f"{daily_avg_weekday:.1f}" if not pd.isna(daily_avg_weekday) else "—"
 avg_we = f"{daily_avg_weekend:.1f}" if not pd.isna(daily_avg_weekend) else "—"
 
-# Відображення KPI (5 колонок)
-c1, c2, c3, c4, c5 = st.columns(5)
+# Відображення KPI (4 колонки)
+c1, c2, c3, c4 = st.columns(4)
 c1.metric("Всього", f"{total_value:,.0f}")
 
 with c2:
@@ -411,31 +374,6 @@ with c4:
             "<p style='font-size:0.85rem; margin:0;'>—</p>",
             unsafe_allow_html=True
         )
-c5.metric(
-    "Коефіцієнт погоджень",
-    f"{approval_rate:.1f}%" if total_ratio > 0 else "—",
-    help="Частка TRUE (парні колонки) від загальної кількості (TRUE+FALSE) за вибраний період"
-)
-
-# --- ДІАГНОСТИКА ---
-with st.expander("🔍 Деталі розрахунку коефіцієнта погоджень"):
-    st.write(f"**Сума TRUE (парні колонки):** {sum_true_total:.0f}")
-    st.write(f"**Сума FALSE (непарні колонки):** {sum_false_total:.0f}")
-    st.write(f"**Загальна сума (TRUE+FALSE):** {total_ratio:.0f}")
-    st.write(f"**Коефіцієнт:** {approval_rate:.1f}%")
-    st.write("---")
-    st.write("**Перевірка: чи сума TRUE+FALSE дорівнює загальній сумі?**")
-    st.write(f"Сума value: {filtered['value'].sum():.0f}")
-    st.write(f"Сума TRUE+FALSE: {total_ratio:.0f}")
-    if abs(filtered['value'].sum() - total_ratio) < 0.01:
-        st.success("✅ Суми збігаються!")
-    else:
-        st.warning("⚠️ Суми не збігаються – можливо, є операції без TRUE/FALSE розбивки.")
-    # Додаткові дані для перевірки
-    st.write("---")
-    st.write("**Перші 5 рядків df_raw (для перевірки):**")
-    # Якщо змінна df_raw не доступна, ми не можемо її вивести, тому просто покажемо статистику
-    st.write("(Для перевірки використовуйте наведені вище суми)")
 
 st.divider()
 
