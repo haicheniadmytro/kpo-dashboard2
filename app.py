@@ -511,13 +511,10 @@ st.plotly_chart(fig_week, use_container_width=True)
 st.divider()
 st.subheader("➕ Додаткові аналітичні графіки")
 
-# 1. Теплова карта: день тижня × місяць (середнє) з підсумками
+# 1. Теплова карта: день тижня × місяць (середнє) – без підсумків
 with st.expander("🌡️ Теплова карта «День тижня × Місяць»"):
-    # Середні значення для теплової карти
     heat_data = filtered.groupby(["month", "weekday"], as_index=False)["value"].mean()
     heat_pivot = heat_data.pivot(index="month", columns="weekday", values="value").fillna(0)
-
-    # Впорядковуємо дні тижня
     weekdays_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     days_ua = {
         "Monday": "Пн", "Tuesday": "Вт", "Wednesday": "Ср",
@@ -529,38 +526,15 @@ with st.expander("🌡️ Теплова карта «День тижня × М�
     heat_pivot = heat_pivot.sort_index()
     heat_pivot.index = heat_pivot.index.strftime("%m.%Y")
 
-    # Додаємо стовпець "Всього" (сума по рядку) – загальна сума за місяць
-    heat_pivot["Всього за місяць"] = heat_pivot.sum(axis=1)
-
-    # Додаємо рядок "Всього" (сума по стовпцю) – сума за день тижня за всі місяці
-    # Спочатку обчислюємо суми для кожного дня тижня (без урахування стовпця "Всього за місяць")
-    week_totals = heat_pivot.iloc[:, :-1].sum(axis=0)
-    # Додаємо рядок з підсумками
-    heat_pivot.loc["Всього по днях"] = week_totals
-    # Для стовпця "Всього за місяць" у рядку підсумку ставимо суму всіх значень
-    heat_pivot.loc["Всього по днях", "Всього за місяць"] = heat_pivot.iloc[:-1, :-1].sum().sum()
-
-    # Тепер будуємо теплову карту з додатковими рядком/стовпцем
     fig_heat = px.imshow(
         heat_pivot,
         text_auto=".1f",
         aspect="auto",
-        labels=dict(x="День тижня", y="Місяць", color="Середнє значення"),
+        labels=dict(x="День тижня", y="Місяць", color="Середнє"),
         color_continuous_scale="Blues",
     )
-    fig_heat.update_layout(
-        height=500,
-        margin=dict(l=10, r=10, t=20, b=10),
-    )
+    fig_heat.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_heat, use_container_width=True)
-
-    # Додатково виведемо таблицю з підсумками по днях тижня (для наочності)
-    st.write("**Підсумки по днях тижня (сума за всі місяці):**")
-    totals_df = pd.DataFrame({
-        "День тижня": list(days_ua.values()),
-        "Сума": week_totals.values
-    })
-    st.dataframe(totals_df, use_container_width=True, hide_index=True)
 
 # 2. Накопичувальна сума
 with st.expander("📈 Накопичувальна сума за період"):
