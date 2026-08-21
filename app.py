@@ -291,7 +291,14 @@ if filtered.empty:
 
 # --- Розрахунок основних метрик ---
 total_value = filtered["value"].sum()
+
+# Середнє за день (всі дні)
 daily_avg = filtered.groupby("date")["value"].sum().mean()
+
+# Середнє за будні (is_weekend == False)
+daily_avg_weekday = filtered[filtered["is_weekend"] == False].groupby("date")["value"].sum().mean()
+# Середнє за вихідні (is_weekend == True)
+daily_avg_weekend = filtered[filtered["is_weekend"] == True].groupby("date")["value"].sum().mean()
 
 forecast = None
 if len(selected_months) == 1:
@@ -376,7 +383,14 @@ approval_rate = (sum_true / total_ratio * 100) if total_ratio > 0 else 0
 # Відображення KPI (5 колонок)
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Всього", f"{total_value:,.0f}")
-c2.metric("Середнє за день", f"{daily_avg:,.1f}")
+
+# Картка "Середнє за день" з трьома рядками
+with c2:
+    st.markdown("**Середнє за день**")
+    st.metric("Всі дні", f"{daily_avg:.1f}" if not pd.isna(daily_avg) else "—")
+    st.metric("Будні", f"{daily_avg_weekday:.1f}" if not pd.isna(daily_avg_weekday) else "—")
+    st.metric("Вихідні", f"{daily_avg_weekend:.1f}" if not pd.isna(daily_avg_weekend) else "—")
+
 c3.metric(
     "Прогноз на місяць",
     f"{forecast:,.0f}" if forecast is not None else "—",
@@ -398,7 +412,7 @@ with c4:
         )
 c5.metric(
     "Коефіцієнт погоджень",
-    f"{approval_rate:.1f}%",
+    f"{approval_rate:.1f}%" if total_ratio > 0 else "—",
     help="Частка TRUE (погоджень) від загальної кількості (TRUE+FALSE) за вибраний період"
 )
 
@@ -502,7 +516,7 @@ with right:
     )
     st.plotly_chart(fig_mix, use_container_width=True)
 
-# Weekday/weekend
+# Weekday/weekend (на основі is_weekend)
 st.subheader("📅 Будні vs вихідні")
 
 week = (
@@ -537,10 +551,11 @@ fig_week.update_layout(
 )
 st.plotly_chart(fig_week, use_container_width=True)
 
-# --- Динаміка коефіцієнта погоджень ---
+# --- Динаміка коефіцієнта погоджень (виправлена) ---
 st.divider()
 st.subheader("📈 Динаміка коефіцієнта погоджень")
 
+# Розраховуємо денний коефіцієнт, виключаючи дні без даних (total=0)
 daily_ratio = filtered.groupby("date").apply(
     lambda x: pd.Series({
         "sum_true": x[x["day_type_flag"] == True]["value"].sum(),
@@ -548,7 +563,9 @@ daily_ratio = filtered.groupby("date").apply(
     })
 ).reset_index()
 daily_ratio["total"] = daily_ratio["sum_true"] + daily_ratio["sum_false"]
-daily_ratio["approval_rate"] = (daily_ratio["sum_true"] / daily_ratio["total"] * 100).fillna(0)
+# Показуємо тільки дні, де є дані (total > 0)
+daily_ratio = daily_ratio[daily_ratio["total"] > 0]
+daily_ratio["approval_rate"] = daily_ratio["sum_true"] / daily_ratio["total"] * 100
 
 fig_ratio = px.line(
     daily_ratio,
@@ -608,8 +625,16 @@ with st.expander("📈 Накопичувальна сума за період")
     fig_cum.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_cum, use_container_width=True)
 
-# 3. Violin plot за днями тижня
+# 3. Violin plot за днями тижня (з поясненням)
 with st.expander("🎻 Розподіл за днями тижня (Violin plot)"):
+    st.markdown(
+        """
+        **Як читати:**  
+        - Ширина «скрипки» показує щільність розподілу значень у цей день тижня.  
+        - Внутрішній ящик (boxplot) показує медіану (лінія) та квартилі (верхня/нижня межі).  
+        - Точки — це окремі денні значення.
+        """
+    )
     box_data = filtered.groupby(["date", "weekday"], as_index=False)["value"].sum()
     box_data["weekday_ua"] = box_data["weekday"].map(days_ua)
     order = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
@@ -624,7 +649,7 @@ with st.expander("🎻 Розподіл за днями тижня (Violin plot)
         box=True,
         points="all",
     )
-    fig_violin.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10), showlegend=False)
+    fig_violin.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10), showlegend=False)
     st.plotly_chart(fig_violin, use_container_width=True)
 
 # 4. Порівняння двох місяців (якщо вибрано рівно 2 місяці)
