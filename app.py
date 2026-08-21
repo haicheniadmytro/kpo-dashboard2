@@ -190,6 +190,12 @@ def metric_delta(current, previous):
     return (current / previous - 1) * 100
 
 
+def format_delta(delta):
+    if delta is None:
+        return "—"
+    return f"{delta:+.1f}%"
+
+
 st.title("📊 Dashboard погоджень КПО")
 st.caption("Дані завантажуються напряму з Google Таблиці. Кеш оновлюється кожні 5 хвилин.")
 
@@ -255,55 +261,105 @@ if filtered.empty:
     st.warning("За вибраними фільтрами даних немає.")
     st.stop()
 
-# KPI
+# --- Розрахунок основних метрик ---
 total_value = filtered["value"].sum()
 daily_avg = filtered.groupby("date")["value"].sum().mean()
-daily_max = filtered.groupby("date")["value"].sum().max()
-daily_min = filtered.groupby("date")["value"].sum().min()
 
-# --- Оновлена логіка порівняння з попереднім місяцем ---
-delta = None
+# Прогноз на місяць (тільки якщо вибрано рівно 1 місяць і він незавершений)
+forecast = None
 if len(selected_months) == 1:
     current_period = pd.Period(selected_months[0])
-    previous_period = current_period - 1
-    today = pd.Timestamp.now().normalize()  # поточна дата без часу
+    today = pd.Timestamp.now().normalize()
+    if current_period.start_time <= today < current_period.end_time:
+        # Поточний місяць триває
+        days_passed = (today - current_period.start_time).days + 1
+        if days_passed > 0:
+            sum_so_far = filtered[filtered["date"].dt.day <= days_passed]["value"].sum()
+            avg_so_far = sum_so_far / days_passed
+            forecast = avg_so_far * current_period.days_in_month
 
-    # Перевіряємо, чи вибраний місяць уже почався
-    if current_period.start_time > today:
-        # Місяць ще не настав – дельту не показуємо
-        delta = None
+# Порівняння (якщо вибрано рівно 1 місяць)
+comparison_parts = []
+if len(selected_months) == 1:
+    current_period = pd.Period(selected_months[0])
+    today = pd.Timestamp.now().normalize()
+
+    # 1) До попереднього місяця
+    prev_period = current_period - 1
+    # Визначаємо, які дні брати
+    if current_period.end_time <= today:
+        # поточний місяць завершений – беремо повні суми
+        cur_sum = filtered["value"].sum()
+        prev_sum = df[
+            (df["month"] == str(prev_period))
+            & (df["operation"] == selected_operation)
+        ]["value"].sum()
+        delta_prev = metric_delta(cur_sum, prev_sum)
     else:
-        # Визначаємо, чи завершений вибраний місяць
-        if current_period.end_time <= today:
-            # Місяць повністю завершений – беремо повні суми
-            current = filtered["value"].sum()
-            prev = df[
-                (df["month"] == str(previous_period))
-                & (df["operation"] == selected_operation)
-            ]["value"].sum()
-        else:
-            # Поточний місяць – порівнюємо за днями до сьогодні
-            day_limit = today.day
-            # Сума за дні 1..day_limit у поточному місяці
-            current = filtered[filtered["date"].dt.day <= day_limit]["value"].sum()
-            # Для попереднього місяця – обмежуємо кількістю днів у ньому
-            days_in_prev = previous_period.days_in_month
-            day_limit_prev = min(day_limit, days_in_prev)
-            prev = df[
-                (df["month"] == str(previous_period))
-                & (df["operation"] == selected_operation)
-                & (df["date"].dt.day <= day_limit_prev)
-            ]["value"].sum()
-        delta = metric_delta(current, prev)
+        # поточний місяць триває
+        day_limit = today.day
+        cur_sum = filtered[filtered["date"].dt.day <= day_limit]["value"].sum()
+        days_in_prev = prev_period.days_in_month
+        day_limit_prev = min(day_limit, days_in_prev)
+        prev_sum = df[
+            (df["month"] == str(prev_period))
+            & (df["operation"] == selected_operation)
+            & (df["date"].dt.day <= day_limit_prev)
+        ]["value"].sum()
+        delta_prev = metric_delta(cur_sum, prev_sum)
 
+    if delta_prev is not None:
+        comparison_parts.append(f"Попер. міс: {format_delta(delta_prev)}")
+
+    # 2) До аналогічного місяця минулого року
+    year_prev = current_period.year - 1
+    month_num = current_period.month
+    # Перевіряємо, чи є дані за минулий рік (може бути, що таблиця не містить такого року)
+    prev_year_period = pd.Period(year=year_prev, month=month_num, freq="M")
+    # Перевіряємо наявність даних за цей місяць і рік у df
+    has_prev_year = not df[
+        (df["month"] == str(prev_year_period))
+        & (df["operation"] == selected_operation)
+    ].empty
+
+    if has_prev_year:
+        # Визначаємо, порівнювати повні місяці чи тільки дні до сьогодні
+        if current_period.end_time <= today:
+            # повний місяць
+            cur_sum = filtered["value"].sum()
+            prev_year_sum = df[
+                (df["month"] == str(prev_year_period))
+                & (df["operation"] == selected_operation)
+            ]["value"].sum()
+            delta_year = metric_delta(cur_sum, prev_year_sum)
+        else:
+            # поточний місяць триває – беремо дні до today
+            day_limit = today.day
+            cur_sum = filtered[filtered["date"].dt.day <= day_limit]["value"].sum()
+            days_in_prev_year = prev_year_period.days_in_month
+            day_limit_prev_year = min(day_limit, days_in_prev_year)
+            prev_year_sum = df[
+                (df["month"] == str(prev_year_period))
+                & (df["operation"] == selected_operation)
+                & (df["date"].dt.day <= day_limit_prev_year)
+            ]["value"].sum()
+            delta_year = metric_delta(cur_sum, prev_year_sum)
+        if delta_year is not None:
+            comparison_parts.append(f"Мин. рік: {format_delta(delta_year)}")
+
+comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
+
+
+# Відображення KPI
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Всього", f"{total_value:,.0f}")
 c2.metric("Середнє за день", f"{daily_avg:,.1f}")
-c3.metric("Максимум за день", f"{daily_max:,.0f}")
-c4.metric(
-    "До попереднього місяця",
-    f"{delta:+.1f}%" if delta is not None else "—",
+c3.metric(
+    "Прогноз на місяць",
+    f"{forecast:,.0f}" if forecast is not None else "—",
+    help="Прогноз на поточний місяць, розрахований на основі середнього за дні, що минули"
 )
+c4.metric("Порівняння", comparison_text)
 
 st.divider()
 
