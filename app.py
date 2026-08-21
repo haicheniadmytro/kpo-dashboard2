@@ -211,7 +211,7 @@ def calc_busiest_operation(df):
 
 def calc_stability(df, daily_avg):
     """
-    Розраховує стандартне відхилення та коефіцієнт варіації.
+    Розраховує стандартне відхилення та коефіцієнт варіації на основі денних сум у df.
     daily_avg - середнє за календарні дні (з основної логіки).
     """
     daily = df.groupby("date")["value"].sum()
@@ -370,20 +370,26 @@ if filtered.empty:
     st.warning("За вибраними фільтрами даних немає.")
     st.stop()
 
-# --- Розрахунок базових метрик ---
-daily_total = filtered.groupby("date")["value"].sum()
-total_value = daily_total.sum()
-
+# --- Обробка поточного незавершеного місяця ---
+today = pd.Timestamp.now().normalize()
 if len(selected_months) == 1:
     period = pd.Period(selected_months[0])
-    today = pd.Timestamp.now().normalize()
     if period.start_time <= today <= period.end_time:
+        # Поточний місяць: обмежуємо дані тільки минулими днями
+        filtered = filtered[filtered["date"] <= today]
         num_days = (today - period.start_time).days + 1
     else:
         num_days = period.days_in_month
 else:
     num_days = sum(pd.Period(m).days_in_month for m in selected_months)
 
+if filtered.empty:
+    st.warning("За вибраними фільтрами даних немає (можливо, ще немає даних за цей місяць).")
+    st.stop()
+
+# --- Розрахунок базових метрик (на основі відфільтрованих даних) ---
+daily_total = filtered.groupby("date")["value"].sum()
+total_value = daily_total.sum()
 daily_avg = total_value / num_days if num_days > 0 else 0
 
 peak = daily_total.max() if not daily_total.empty else 0
@@ -394,7 +400,7 @@ busiest_weekday, busiest_weekday_val = calc_busiest_weekday(filtered)
 busiest_op, busiest_op_val = calc_busiest_operation(filtered)
 std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
-# --- Прогноз ---
+# --- Прогноз (використовує оригінальний df, не обрізаний filtered) ---
 forecast = None
 if len(selected_months) == 1 and operation_mode == "Тотал":
     forecast_data = forecast_scenarios(df[df["operation"] == "Тотал"], selected_months[0])
@@ -405,10 +411,10 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
 comparison_parts = []
 if len(selected_months) == 1 and operation_mode == "Тотал":
     current_period = pd.Period(selected_months[0])
-    today = pd.Timestamp.now().normalize()
+    today_comp = pd.Timestamp.now().normalize()
 
     prev_period = current_period - 1
-    if current_period.end_time <= today:
+    if current_period.end_time <= today_comp:
         cur_sum = daily_total.sum()
         prev_sum = df[
             (df["month"] == str(prev_period))
@@ -416,7 +422,7 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
         ]["value"].sum()
         delta_prev = ((cur_sum - prev_sum) / prev_sum * 100) if prev_sum > 0 else None
     else:
-        day_limit = today.day
+        day_limit = today_comp.day
         cur_sum = filtered[filtered["date"].dt.day <= day_limit]["value"].sum()
         days_in_prev = prev_period.days_in_month
         day_limit_prev = min(day_limit, days_in_prev)
@@ -439,7 +445,7 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
     ].empty
 
     if has_prev_year:
-        if current_period.end_time <= today:
+        if current_period.end_time <= today_comp:
             cur_sum = daily_total.sum()
             prev_year_sum = df[
                 (df["month"] == str(prev_year_period))
@@ -447,7 +453,7 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
             ]["value"].sum()
             delta_year = ((cur_sum - prev_year_sum) / prev_year_sum * 100) if prev_year_sum > 0 else None
         else:
-            day_limit = today.day
+            day_limit = today_comp.day
             cur_sum = filtered[filtered["date"].dt.day <= day_limit]["value"].sum()
             days_in_prev_year = prev_year_period.days_in_month
             day_limit_prev_year = min(day_limit, days_in_prev_year)
@@ -462,27 +468,57 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
 
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
-# --- CSS для компактних метрик (зменшені шрифти) ---
+
+# --- Допоміжна функція для кастомних метрик ---
+def custom_metric(label, value, help_text=None):
+    """Створює кастомну метрику з однаковим компактним стилем."""
+    help_icon = f'<span class="help-icon" title="{help_text}">?</span>' if help_text else ""
+    return f"""
+    <div class="metric-container">
+        <div class="metric-label">{label} {help_icon}</div>
+        <div class="metric-value">{value}</div>
+    </div>
+    """
+
+
+# --- CSS для кастомних метрик ---
 st.markdown("""
 <style>
-    /* Значення метрик */
-    .stMetricValue {
-        font-size: 0.85rem !important;
-        font-weight: 600 !important;
+    .metric-container {
+        background: transparent;
+        padding: 0.2rem 0;
+        border: none;
     }
-    /* Підписи метрик */
-    .stMetricLabel {
+    .metric-label {
         font-size: 0.65rem !important;
-        font-weight: 400 !important;
+        color: rgba(49, 51, 63, 0.7);
+        font-weight: 400;
+        letter-spacing: 0.02em;
+        margin-bottom: 0.1rem;
     }
-    /* Контейнер метрики */
-    .stMetric {
-        font-size: 0.75rem !important;
+    .metric-value {
+        font-size: 0.9rem !important;
+        font-weight: 600;
+        color: rgba(49, 51, 63, 1);
+        line-height: 1.2;
     }
-    /* Спеціальний клас для порівняння */
+    .help-icon {
+        display: inline-block;
+        background: rgba(49, 51, 63, 0.15);
+        border-radius: 50%;
+        width: 14px;
+        height: 14px;
+        text-align: center;
+        line-height: 14px;
+        font-size: 0.55rem;
+        color: rgba(49, 51, 63, 0.7);
+        cursor: help;
+        margin-left: 2px;
+    }
     .comparison-text {
         font-size: 0.65rem !important;
         line-height: 1.3 !important;
+        margin: 0 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -494,29 +530,34 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Динаміка", "�
 # TAB 1: OVERVIEW
 # ============================================================
 with tab1:
+    # Рядок 1
     col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
-        st.metric("Всього", f"{total_value:,.0f}", help="Загальна кількість операцій за вибраний період")
+        st.markdown(custom_metric("Всього", f"{total_value:,.0f}", "Загальна кількість операцій за вибраний період"), unsafe_allow_html=True)
 
     with col2:
-        st.metric("Середнє за день", f"{daily_avg:.0f}", help=f"Сумарна кількість поділена на {num_days} календарних днів у вибраному періоді")
+        st.markdown(custom_metric("Середнє за день", f"{daily_avg:.0f}", f"Сумарна кількість поділена на {num_days} календарних днів у вибраному періоді"), unsafe_allow_html=True)
 
     with col3:
         if forecast:
-            st.metric("Прогноз на місяць", f"{forecast['base_forecast']:,.0f}", help="Базовий прогноз на поточний місяць")
+            val = f"{forecast['base_forecast']:,.0f}"
+            help_txt = "Базовий прогноз на поточний місяць"
         else:
-            st.metric("Прогноз на місяць", "—")
+            val = "—"
+            help_txt = None
+        st.markdown(custom_metric("Прогноз на місяць", val, help_txt), unsafe_allow_html=True)
 
     with col4:
-        st.metric("Пік за день", f"{peak:,.0f}", help="Найбільша кількість операцій за один день у вибраному періоді")
+        st.markdown(custom_metric("Пік за день", f"{peak:,.0f}", "Найбільша кількість операцій за один день (лише фактичні дні)"), unsafe_allow_html=True)
 
     with col5:
-        st.metric("Мінімум за день", f"{min_val:,.0f}", help="Найменша кількість операцій за один день у вибраному періоді")
+        st.markdown(custom_metric("Мінімум за день", f"{min_val:,.0f}", "Найменша кількість операцій за один день (лише фактичні дні)"), unsafe_allow_html=True)
 
     with col6:
-        st.metric("Пік / середнє", f"{peak_avg_ratio:.2f}×", help="У скільки разів пік перевищує середнє значення")
+        st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×", "У скільки разів пік перевищує середнє"), unsafe_allow_html=True)
 
+    # Рядок 2
     col7, col8, col9, col10 = st.columns(4)
 
     with col7:
@@ -526,13 +567,22 @@ with tab1:
                 "Thursday": "Чт", "Friday": "Пт", "Saturday": "Сб", "Sunday": "Нд"
             }
             day_ua = days_ua.get(busiest_weekday, busiest_weekday)
-            st.metric("Найактивніший день", f"{day_ua} — {busiest_weekday_val:.0f}/день", help="День тижня з найвищим середнім навантаженням")
+            val = f"{day_ua} — {busiest_weekday_val:.0f}/день"
+            help_txt = "День тижня з найвищим середнім навантаженням (лише фактичні дні)"
+        else:
+            val = "—"
+            help_txt = None
+        st.markdown(custom_metric("Найактивніший день", val, help_txt), unsafe_allow_html=True)
 
     with col8:
         if busiest_op:
-            st.metric("Найактивніша операція", f"{busiest_op} — {busiest_op_val:,.0f}", help="Операція з найбільшою загальною кількістю")
+            display_name = busiest_op if len(busiest_op) <= 12 else busiest_op[:10] + "…"
+            val = f'{display_name} — {busiest_op_val:,.0f}'
+            help_txt = f"{busiest_op} — {busiest_op_val:,.0f} (повна назва)"
         else:
-            st.metric("Найактивніша операція", "—")
+            val = "—"
+            help_txt = None
+        st.markdown(custom_metric("Найактивніша операція", val, help_txt), unsafe_allow_html=True)
 
     with col9:
         if len(selected_months) == 1 and operation_mode == "Тотал":
@@ -541,20 +591,19 @@ with tab1:
                 parts = comparison_text.split("  ")
                 for part in parts:
                     st.markdown(
-                        f"<p class='comparison-text' style='margin:0;'>{part}</p>",
+                        f"<p class='comparison-text'>{part}</p>",
                         unsafe_allow_html=True
                     )
             else:
                 st.markdown(
-                    "<p class='comparison-text' style='margin:0;'>—</p>",
+                    "<p class='comparison-text'>—</p>",
                     unsafe_allow_html=True
                 )
         else:
-            st.metric("Порівняння", "—", help="Доступно лише для одного місяця в режимі 'Тотал'")
+            st.markdown(custom_metric("Порівняння", "—", "Доступно лише для одного місяця в режимі 'Тотал'"), unsafe_allow_html=True)
 
     with col10:
-        st.metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—",
-                  help="Коефіцієнт варіації: <15% - низька, 15-30% - середня, >30% - висока варіативність навантаження")
+        st.markdown(custom_metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—", "Коефіцієнт варіації (лише фактичні дні)"), unsafe_allow_html=True)
 
     st.divider()
 
@@ -615,13 +664,14 @@ with tab1:
         st.subheader("📊 Прогноз на поточний місяць")
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Факт (на сьогодні)", f"{forecast['fact']:,.0f}")
-        col2.metric("Базовий прогноз", f"{forecast['base_forecast']:,.0f}",
-                    help="Базовий прогноз = середнє за минулі дні × кількість днів у місяці")
-        col3.metric("Мінімальний", f"{forecast['min_forecast']:,.0f}",
-                    help="Мінімальний = (середнє - 0.5 × стандартне відхилення) × кількість днів (не менше 0)")
-        col4.metric("Оптимістичний", f"{forecast['max_forecast']:,.0f}",
-                    help="Оптимістичний = (середнє + 0.5 × стандартне відхилення) × кількість днів")
+        with col1:
+            st.markdown(custom_metric("Факт (на сьогодні)", f"{forecast['fact']:,.0f}"), unsafe_allow_html=True)
+        with col2:
+            st.markdown(custom_metric("Базовий прогноз", f"{forecast['base_forecast']:,.0f}", "середнє за минулі дні × кількість днів у місяці"), unsafe_allow_html=True)
+        with col3:
+            st.markdown(custom_metric("Мінімальний", f"{forecast['min_forecast']:,.0f}", "(середнє - 0.5×σ) × кількість днів (не менше 0)"), unsafe_allow_html=True)
+        with col4:
+            st.markdown(custom_metric("Оптимістичний", f"{forecast['max_forecast']:,.0f}", "(середнє + 0.5×σ) × кількість днів"), unsafe_allow_html=True)
 
         fact_daily = filtered[filtered["date"].dt.day <= forecast["days_passed"]]
         fact_daily = fact_daily.groupby("date")["value"].sum().reset_index()
@@ -657,7 +707,6 @@ with tab1:
 
             fig_forecast = go.Figure()
 
-            # Фактична лінія
             fig_forecast.add_trace(go.Scatter(
                 x=fact_daily["date"],
                 y=fact_daily["cumulative"],
@@ -668,7 +717,6 @@ with tab1:
                 showlegend=False
             ))
 
-            # Смуга прогнозу
             fig_forecast.add_trace(go.Scatter(
                 x=list(future_dates) + list(future_dates)[::-1],
                 y=max_forecast_vals + min_forecast_vals[::-1],
@@ -679,7 +727,6 @@ with tab1:
                 showlegend=False
             ))
 
-            # Базовий прогноз
             fig_forecast.add_trace(go.Scatter(
                 x=future_dates,
                 y=base_forecast_vals,
@@ -689,7 +736,6 @@ with tab1:
                 showlegend=False
             ))
 
-            # Мінімальний прогноз
             fig_forecast.add_trace(go.Scatter(
                 x=future_dates,
                 y=min_forecast_vals,
@@ -699,7 +745,6 @@ with tab1:
                 showlegend=False
             ))
 
-            # Оптимістичний прогноз
             fig_forecast.add_trace(go.Scatter(
                 x=future_dates,
                 y=max_forecast_vals,
@@ -1045,15 +1090,11 @@ with tab4:
 
     st.subheader("📊 Стабільність навантаження")
     col1, col2, col3 = st.columns(3)
-    col1.metric("Середнє за день", f"{daily_avg:.0f}" if daily_avg > 0 else "—",
-                help="Розраховано за тим самим принципом, що й в Overview")
-    col2.metric("Стандартне відхилення", f"{std:.1f}" if std > 0 else "—",
-                help="Стандартне відхилення денних сум")
-    col3.metric("Коефіцієнт варіації (CV)", f"{cv:.1f}%" if cv > 0 else "—",
-                help="CV = (стандартне відхилення / середнє) × 100%")
+    col1.markdown(custom_metric("Середнє за день", f"{daily_avg:.0f}" if daily_avg > 0 else "—", "Розраховано за тим самим принципом, що й в Overview"), unsafe_allow_html=True)
+    col2.markdown(custom_metric("Стандартне відхилення", f"{std:.1f}" if std > 0 else "—", "Стандартне відхилення денних сум (лише фактичні дні)"), unsafe_allow_html=True)
+    col3.markdown(custom_metric("Коефіцієнт варіації (CV)", f"{cv:.1f}%" if cv > 0 else "—", "CV = (стандартне відхилення / середнє) × 100%"), unsafe_allow_html=True)
 
     st.subheader("📈 Співвідношення пік / середнє")
-    st.metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—",
-              help="У скільки разів максимальне денне значення перевищує середнє")
+    st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—", "У скільки разів максимальне денне значення перевищує середнє"), unsafe_allow_html=True)
 
 st.caption("Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці.")
