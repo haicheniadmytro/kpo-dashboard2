@@ -130,13 +130,13 @@ def load_data():
 
                 row = values[r]
                 for day_idx in range(days):
-                    col = 4 + day_idx  # E = index 4
+                    # Дані починаються з колонки D (індекс 3)
+                    col = 3 + day_idx
                     value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
-                    # Визначаємо, чи це TRUE (парна колонка, починаючи з D)
-                    # D = індекс 3, E = індекс 4, тому day_idx=0 відповідає D (парний)
-                    is_true_col = (day_idx % 2 == 0)  # day_idx 0 -> D (парний), 1 -> E (непарний)
+                    # TRUE – парні колонки (D, F, H, ...) => day_idx парний
+                    is_true_col = (day_idx % 2 == 0)
 
                     records.append(
                         {
@@ -148,7 +148,7 @@ def load_data():
                             "month_name": date.strftime("%b %Y"),
                             "weekday": date.day_name(),
                             "is_weekend": date.weekday() >= 5,
-                            "is_true_col": is_true_col,  # TRUE, якщо парна колонка (D, F, H, ...)
+                            "is_true_col": is_true_col,
                         }
                     )
 
@@ -157,10 +157,10 @@ def load_data():
     if df_raw.empty:
         raise ValueError("Не знайдено деталізованих даних у Google Таблиці.")
 
-    # Додаємо метадані для дат
+    # Метадані для дат
     date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend"]].drop_duplicates("date")
 
-    # Групуємо за датою та операцією, сумуючи значення
+    # Групуємо за датою та операцією
     df_grouped = (
         df_raw.groupby(["date", "operation"], as_index=False)["value"]
         .sum()
@@ -178,28 +178,25 @@ def load_data():
     total = total.merge(date_metadata, on="date", how="left")
     df = pd.concat([df, total], ignore_index=True)
 
-    # Для кожної дати та операції обчислюємо суми TRUE (парні колонки) і FALSE (непарні)
-    # Ми вже маємо детальні записи в df_raw, тому обчислюємо окремо
+    # Агрегуємо суми TRUE і FALSE
     true_false_agg = (
         df_raw.groupby(["date", "operation", "is_true_col"])["value"]
         .sum()
         .unstack(fill_value=0)
         .reset_index()
     )
-    # Перейменовуємо колонки
+    # Перейменовуємо колонки: is_true_col=False -> sum_false, is_true_col=True -> sum_true
     true_false_agg.columns = ["date", "operation", "sum_false", "sum_true"]
-    # Якщо немає даних для TRUE або FALSE, заповнюємо нулями
-    true_false_agg["sum_true"] = true_false_agg.get("sum_true", 0)
-    true_false_agg["sum_false"] = true_false_agg.get("sum_false", 0)
+    # Якщо якоїсь колонки немає, додаємо
+    if "sum_true" not in true_false_agg.columns:
+        true_false_agg["sum_true"] = 0
+    if "sum_false" not in true_false_agg.columns:
+        true_false_agg["sum_false"] = 0
 
     # Додаємо суми TRUE/FALSE до основного df
     df = df.merge(true_false_agg, on=["date", "operation"], how="left")
-    # Заповнюємо NaN нулями (якщо для якоїсь операції немає даних)
     df["sum_true"] = df["sum_true"].fillna(0)
     df["sum_false"] = df["sum_false"].fillna(0)
-
-    # Переконуємось, що sum_true + sum_false = value (для перевірки)
-    # Але через різні способи агрегації може бути незначна розбіжність через округлення – ігноруємо
 
     return df
 
@@ -365,7 +362,6 @@ if len(selected_months) == 1:
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
 # --- Коефіцієнт погоджень (sum_true / (sum_true + sum_false)) ---
-# Сумуємо TRUE і FALSE за вибраний період та операцію
 sum_true_total = filtered["sum_true"].sum()
 sum_false_total = filtered["sum_false"].sum()
 total_ratio = sum_true_total + sum_false_total
@@ -418,7 +414,7 @@ c5.metric(
     help="Частка TRUE (парні колонки) від загальної кількості (TRUE+FALSE) за вибраний період"
 )
 
-# --- ДІАГНОСТИКА (для перевірки сум) ---
+# --- ДІАГНОСТИКА ---
 with st.expander("🔍 Деталі розрахунку коефіцієнта погоджень"):
     st.write(f"**Сума TRUE (парні колонки):** {sum_true_total:.0f}")
     st.write(f"**Сума FALSE (непарні колонки):** {sum_false_total:.0f}")
