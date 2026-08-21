@@ -464,7 +464,7 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
 
-# --- Допоміжна функція для кастомних метрик (збільшені шрифти) ---
+# --- Допоміжна функція для кастомних метрик ---
 def custom_metric(label, value, help_text=None):
     help_icon = f'<span class="help-icon" title="{help_text}">?</span>' if help_text else ""
     return f"""
@@ -475,7 +475,7 @@ def custom_metric(label, value, help_text=None):
     """
 
 
-# --- CSS для кастомних метрик (збільшені шрифти, чорний колір) ---
+# --- CSS для кастомних метрик (колір адаптується до теми) ---
 st.markdown("""
 <style>
     .metric-container {
@@ -485,27 +485,27 @@ st.markdown("""
     }
     .metric-label {
         font-size: 0.8rem !important;
-        color: #262730 !important;
         font-weight: 400;
         letter-spacing: 0.02em;
         margin-bottom: 0.15rem;
+        color: inherit !important;
     }
     .metric-value {
         font-size: 1.3rem !important;
         font-weight: 600;
-        color: #262730 !important;
         line-height: 1.2;
+        color: inherit !important;
     }
     .help-icon {
         display: inline-block;
-        background: rgba(49, 51, 63, 0.15);
+        background: rgba(128, 128, 128, 0.2);
         border-radius: 50%;
         width: 16px;
         height: 16px;
         text-align: center;
         line-height: 16px;
         font-size: 0.65rem;
-        color: #262730;
+        color: inherit !important;
         cursor: help;
         margin-left: 3px;
     }
@@ -513,7 +513,7 @@ st.markdown("""
         font-size: 0.8rem !important;
         line-height: 1.3 !important;
         margin: 0 !important;
-        color: #262730 !important;
+        color: inherit !important;
     }
 </style>
 """, unsafe_allow_html=True)
