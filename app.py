@@ -380,19 +380,23 @@ sum_false = df_ratio[df_ratio["day_type_flag"] == False]["value"].sum()
 total_ratio = sum_true + sum_false
 approval_rate = (sum_true / total_ratio * 100) if total_ratio > 0 else 0
 
+# Підготовка рядків для середніх
+avg_all = f"{daily_avg:.1f}" if not pd.isna(daily_avg) else "—"
+avg_wd = f"{daily_avg_weekday:.1f}" if not pd.isna(daily_avg_weekday) else "—"
+avg_we = f"{daily_avg_weekend:.1f}" if not pd.isna(daily_avg_weekend) else "—"
+
 # Відображення KPI (5 колонок)
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Всього", f"{total_value:,.0f}")
 
-# Картка "Середнє за день" з маленьким шрифтом (як у "Порівняння")
 with c2:
     st.markdown("**Середнє за день**")
     st.markdown(
         f"""
         <div style='font-size:0.85rem; line-height:1.6;'>
-            Всі дні: {daily_avg:.1f if not pd.isna(daily_avg) else "—"}<br>
-            Будні: {daily_avg_weekday:.1f if not pd.isna(daily_avg_weekday) else "—"}<br>
-            Вихідні: {daily_avg_weekend:.1f if not pd.isna(daily_avg_weekend) else "—"}
+            Всі дні: {avg_all}<br>
+            Будні: {avg_wd}<br>
+            Вихідні: {avg_we}
         </div>
         """,
         unsafe_allow_html=True
@@ -565,7 +569,7 @@ fig_week.update_layout(
 )
 st.plotly_chart(fig_week, use_container_width=True)
 
-# --- ДОДАТКОВІ ВІЗУАЛІЗАЦІЇ (без Violin plot і без динаміки коефіцієнта) ---
+# --- ДОДАТКОВІ ВІЗУАЛІЗАЦІЇ ---
 st.divider()
 st.subheader("➕ Додаткові аналітичні графіки")
 
