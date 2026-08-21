@@ -471,7 +471,8 @@ with tab1:
         st.metric("Всього", f"{total_value:,.0f}", help="Загальна кількість операцій за вибраний період")
 
     with col2:
-        st.metric("Середнє за день", f"{daily_avg:.1f}", help=f"Сумарна кількість поділена на {num_days} календарних днів у вибраному періоді")
+        # Середнє за день - ціле число
+        st.metric("Середнє за день", f"{daily_avg:.0f}", help=f"Сумарна кількість поділена на {num_days} календарних днів у вибраному періоді")
 
     with col3:
         if forecast:
@@ -502,8 +503,9 @@ with tab1:
     with col8:
         if busiest_op:
             st.markdown("**Найактивніша операція**")
+            # Збільшений шрифт для операції
             st.markdown(
-                f"<p style='font-size:0.9rem; margin:0;'>{busiest_op} — {busiest_op_val:,.0f}</p>",
+                f"<p style='font-size:1.1rem; margin:0;'>{busiest_op} — {busiest_op_val:,.0f}</p>",
                 unsafe_allow_html=True
             )
         else:
@@ -524,7 +526,7 @@ with tab1:
                     "<p style='font-size:0.75rem; margin:0;'>—</p>",
                     unsafe_allow_html=True
                 )
-            st.caption("Показується лише для одного місяця в режимі 'Тотал'")
+            # Прибрано підпис "Показується лише для одного місяця в режимі 'Тотал'"
         else:
             st.metric("Порівняння", "—", help="Доступно лише для одного місяця в режимі 'Тотал'")
 
@@ -539,8 +541,6 @@ with tab1:
 
     if operation_mode == "Тотал":
         daily = filtered.groupby("date")["value"].sum().reset_index()
-        # Форматуємо дати для відображення
-        daily["date_str"] = daily["date"].dt.strftime("%d.%m")
         fig_overview = px.line(
             daily,
             x="date",
@@ -549,11 +549,7 @@ with tab1:
             labels={"date": "Дата", "value": "Кількість"},
             color_discrete_sequence=["blue"],
         )
-        # Перейменовуємо вісь X з форматом дат
-        fig_overview.update_xaxes(
-            tickformat="%d.%m",
-            title_text="Дата"
-        )
+        fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
         if smooth_enabled:
             daily["value_smooth"] = daily["value"].rolling(window=smooth_window, min_periods=1, center=True).mean()
             fig_overview.add_scatter(
@@ -767,7 +763,10 @@ with tab2:
                     "rolling_avg": "Середнє (14 днів)",
                     "deviation": "Відхилення, %",
                     "type": "Тип",
-                    "z_score": "Z-score"
+                    "z_score": st.column_config.NumberColumn(
+                        "Z-score",
+                        help="Кількість стандартних відхилень від середнього. Значення >1.5 вважається аномалією."
+                    )
                 },
                 use_container_width=True,
                 hide_index=True
