@@ -191,35 +191,34 @@ def load_data():
                         }
                     )
 
-    df = pd.DataFrame(records)
+    df_raw = pd.DataFrame(records)
 
-    if df.empty:
+    if df_raw.empty:
         raise ValueError("Не знайдено деталізованих даних у Google Таблиці.")
 
-    df = (
-        df.groupby(["date", "operation"], as_index=False)["value"]
+    # Зберігаємо метадані для кожної дати
+    date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend", "day_type_flag"]].drop_duplicates("date")
+
+    # Групуємо за датою та операцією, сумуючи значення
+    df_grouped = (
+        df_raw.groupby(["date", "operation"], as_index=False)["value"]
         .sum()
         .sort_values(["date", "operation"])
     )
 
-    df = df.merge(
-        df[["date", "year", "month", "month_name", "weekday", "is_weekend", "day_type_flag"]].drop_duplicates("date"),
-        on="date",
-        how="left"
-    )
+    # Приєднуємо метадані
+    df = df_grouped.merge(date_metadata, on="date", how="left")
 
+    # Додаємо "Тотал"
     total = (
         df.groupby("date", as_index=False)["value"]
         .sum()
         .assign(operation="Тотал")
     )
-    total = total.merge(
-        df[["date", "year", "month", "month_name", "weekday", "is_weekend", "day_type_flag"]].drop_duplicates("date"),
-        on="date",
-        how="left"
-    )
+    total = total.merge(date_metadata, on="date", how="left")
     df = pd.concat([df, total], ignore_index=True)
 
+    # Переконуємось, що day_type_flag є булевим (можуть бути None)
     df["day_type_flag"] = df["day_type_flag"].astype(bool)
 
     return df
@@ -336,56 +335,92 @@ if len(selected_months) == 1:
     prev_period = current_period - 1
     if current_period.end_time <= today:
         cur_sum = filtered["value"].sum()
-        prev_sum = df[
-            (df["month"] == str(prev_period))
-            & (df["operation"] == selected_operation)
-            & (df["day_type_flag"].isin(filtered["day_type_flag"].unique()) if selected_day_type != "Всі" else True)
-        ]["value"].sum()
+        # Для попереднього періоду враховуємо той самий тип дня (якщо вибрано конкретний)
+        if selected_day_type != "Всі":
+            prev_sum = df[
+                (df["month"] == str(prev_period))
+                & (df["operation"] == selected_operation)
+                & (df["day_type_flag"] == flag_val)
+            ]["value"].sum()
+        else:
+            prev_sum = df[
+                (df["month"] == str(prev_period))
+                & (df["operation"] == selected_operation)
+            ]["value"].sum()
         delta_prev = metric_delta(cur_sum, prev_sum)
     else:
         day_limit = today.day
         cur_sum = filtered[filtered["date"].dt.day <= day_limit]["value"].sum()
         days_in_prev = prev_period.days_in_month
         day_limit_prev = min(day_limit, days_in_prev)
-        prev_sum = df[
-            (df["month"] == str(prev_period))
-            & (df["operation"] == selected_operation)
-            & (df["date"].dt.day <= day_limit_prev)
-            & (df["day_type_flag"].isin(filtered["day_type_flag"].unique()) if selected_day_type != "Всі" else True)
-        ]["value"].sum()
+        if selected_day_type != "Всі":
+            prev_sum = df[
+                (df["month"] == str(prev_period))
+                & (df["operation"] == selected_operation)
+                & (df["date"].dt.day <= day_limit_prev)
+                & (df["day_type_flag"] == flag_val)
+            ]["value"].sum()
+        else:
+            prev_sum = df[
+                (df["month"] == str(prev_period))
+                & (df["operation"] == selected_operation)
+                & (df["date"].dt.day <= day_limit_prev)
+            ]["value"].sum()
         delta_prev = metric_delta(cur_sum, prev_sum)
 
     if delta_prev is not None:
         comparison_parts.append(f"Попер. міс: {format_delta(delta_prev)}")
 
+    # До аналогічного місяця минулого року
     year_prev = current_period.year - 1
     month_num = current_period.month
     prev_year_period = pd.Period(year=year_prev, month=month_num, freq="M")
-    has_prev_year = not df[
-        (df["month"] == str(prev_year_period))
-        & (df["operation"] == selected_operation)
-    ].empty
+    # Перевіряємо наявність даних за цей період
+    if selected_day_type != "Всі":
+        has_prev_year = not df[
+            (df["month"] == str(prev_year_period))
+            & (df["operation"] == selected_operation)
+            & (df["day_type_flag"] == flag_val)
+        ].empty
+    else:
+        has_prev_year = not df[
+            (df["month"] == str(prev_year_period))
+            & (df["operation"] == selected_operation)
+        ].empty
 
     if has_prev_year:
         if current_period.end_time <= today:
             cur_sum = filtered["value"].sum()
-            prev_year_sum = df[
-                (df["month"] == str(prev_year_period))
-                & (df["operation"] == selected_operation)
-                & (df["day_type_flag"].isin(filtered["day_type_flag"].unique()) if selected_day_type != "Всі" else True)
-            ]["value"].sum()
+            if selected_day_type != "Всі":
+                prev_year_sum = df[
+                    (df["month"] == str(prev_year_period))
+                    & (df["operation"] == selected_operation)
+                    & (df["day_type_flag"] == flag_val)
+                ]["value"].sum()
+            else:
+                prev_year_sum = df[
+                    (df["month"] == str(prev_year_period))
+                    & (df["operation"] == selected_operation)
+                ]["value"].sum()
             delta_year = metric_delta(cur_sum, prev_year_sum)
         else:
             day_limit = today.day
             cur_sum = filtered[filtered["date"].dt.day <= day_limit]["value"].sum()
             days_in_prev_year = prev_year_period.days_in_month
             day_limit_prev_year = min(day_limit, days_in_prev_year)
-            prev_year_sum = df[
-                (df["month"] == str(prev_year_period))
-                & (df["operation"] == selected_operation)
-                & (df["date"].dt.day <= day_limit_prev_year)
-                & (df["day_type_flag"].isin(filtered["day_type_flag"].unique()) if selected_day_type != "Всі" else True)
-            ]["value"].sum()
+            if selected_day_type != "Всі":
+                prev_year_sum = df[
+                    (df["month"] == str(prev_year_period))
+                    & (df["operation"] == selected_operation)
+                    & (df["date"].dt.day <= day_limit_prev_year)
+                    & (df["day_type_flag"] == flag_val)
+                ]["value"].sum()
+            else:
+                prev_year_sum = df[
+                    (df["month"] == str(prev_year_period))
+                    & (df["operation"] == selected_operation)
+                    & (df["date"].dt.day <= day_limit_prev_year)
+                ]["value"].sum()
             delta_year = metric_delta(cur_sum, prev_year_sum)
         if delta_year is not None:
             comparison_parts.append(f"Мин. рік: {format_delta(delta_year)}")
@@ -393,19 +428,15 @@ if len(selected_months) == 1:
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
 # --- Коефіцієнт погоджень (TRUE / (TRUE+FALSE)) ---
-# Для цього нам потрібні дані без фільтра за типом дня (але з урахуванням вибраного показника)
 df_for_ratio = df[
     df["year"].isin(selected_years)
     & df["month"].isin(selected_months)
     & (df["operation"] == selected_operation)
 ].copy()
 
-# Якщо вибрано конкретний тип дня – рахуємо тільки для нього, інакше для всіх
 if selected_day_type != "Всі":
-    flag_val = True if selected_day_type == "TRUE" else False
     df_for_ratio = df_for_ratio[df_for_ratio["day_type_flag"] == flag_val]
 
-# Суми TRUE і FALSE за вибраний період
 sum_true = df_for_ratio[df_for_ratio["day_type_flag"] == True]["value"].sum()
 sum_false = df_for_ratio[df_for_ratio["day_type_flag"] == False]["value"].sum()
 total_ratio_sum = sum_true + sum_false
@@ -565,12 +596,29 @@ with right:
             df["year"].isin(selected_years)
             & df["month"].isin(selected_months)
             & (df["operation"] != "Тотал")
-            & (df["day_type_flag"].isin(filtered["day_type_flag"].unique()) if selected_day_type != "Всі" else True)
         ]
         .groupby("operation", as_index=False)["value"]
         .sum()
         .sort_values("value", ascending=False)
     )
+    # Якщо вибрано конкретний тип дня – фільтруємо
+    if selected_day_type != "Всі":
+        mix = mix[mix["operation"].isin(
+            df[(df["day_type_flag"] == flag_val) & df["operation"].isin(mix["operation"])]["operation"].unique()
+        )]
+        # Але простіше: перерахувати з урахуванням фільтра
+        mix = (
+            df[
+                df["year"].isin(selected_years)
+                & df["month"].isin(selected_months)
+                & (df["operation"] != "Тотал")
+                & (df["day_type_flag"] == flag_val)
+            ]
+            .groupby("operation", as_index=False)["value"]
+            .sum()
+            .sort_values("value", ascending=False)
+        )
+
     total_ops = mix["value"].sum()
     mix["percent"] = (mix["value"] / total_ops * 100).round(1)
     mix["text"] = mix["percent"].astype(str) + "%"
@@ -632,23 +680,20 @@ st.subheader("📊 Аналітика за рішеннями (TRUE – пого
 
 # 1. Динаміка коефіцієнта погоджень
 with st.expander("📈 Динаміка коефіцієнта погоджень", expanded=True):
-    # Для цього графіка нам потрібні денні суми TRUE і FALSE без фільтра за типом дня
     daily_ratio_data = df[
         df["year"].isin(selected_years)
         & df["month"].isin(selected_months)
         & (df["operation"] == selected_operation)
     ].copy()
 
-    # Якщо вибрано конкретний тип дня – показуємо тільки його, але тоді коефіцієнт буде 100% або 0%
-    # Тому для цього графіка ігноруємо фільтр типу дня, щоб показувати реальний коефіцієнт
     if selected_day_type != "Всі":
-        # Якщо вибрано конкретний тип – попереджаємо, що графік показує загальний коефіцієнт
         st.info("Графік показує загальний коефіцієнт погоджень (без урахування фільтра типу дня)")
 
-    # Групуємо по днях, обчислюємо суми TRUE і FALSE
-    daily_agg = daily_ratio_data.groupby("date").agg(
-        sum_true=("value", lambda x: x[daily_ratio_data["day_type_flag"] == True].sum()),
-        sum_false=("value", lambda x: x[daily_ratio_data["day_type_flag"] == False].sum())
+    daily_agg = daily_ratio_data.groupby("date").apply(
+        lambda x: pd.Series({
+            "sum_true": x[x["day_type_flag"] == True]["value"].sum(),
+            "sum_false": x[x["day_type_flag"] == False]["value"].sum()
+        })
     ).reset_index()
     daily_agg["total"] = daily_agg["sum_true"] + daily_agg["sum_false"]
     daily_agg["approval_rate"] = (daily_agg["sum_true"] / daily_agg["total"] * 100).fillna(0)
@@ -677,9 +722,7 @@ with st.expander("📊 Погодження vs Відмови по місяця�
         & (df["operation"] == selected_operation)
     ].copy()
 
-    # Якщо вибрано конкретний тип дня – показуємо тільки його (але тоді один стовпець буде порожнім)
     if selected_day_type != "Всі":
-        flag_val = True if selected_day_type == "TRUE" else False
         monthly_decision = monthly_decision[monthly_decision["day_type_flag"] == flag_val]
 
     monthly_decision = (
@@ -707,7 +750,7 @@ with st.expander("📊 Погодження vs Відмови по місяця�
     )
     st.plotly_chart(fig_decision, use_container_width=True)
 
-# 3. Структура операцій з розбивкою за рішенням
+# 3. Структура операцій за рішенням
 with st.expander("🧩 Структура операцій за рішенням (TRUE/FALSE)", expanded=True):
     ops_decision = df[
         df["year"].isin(selected_years)
@@ -715,9 +758,7 @@ with st.expander("🧩 Структура операцій за рішенням
         & (df["operation"] != "Тотал")
     ].copy()
 
-    # Якщо вибрано конкретний тип дня – фільтруємо
     if selected_day_type != "Всі":
-        flag_val = True if selected_day_type == "TRUE" else False
         ops_decision = ops_decision[ops_decision["day_type_flag"] == flag_val]
 
     ops_decision = (
@@ -727,7 +768,6 @@ with st.expander("🧩 Структура операцій за рішенням
     )
     ops_decision["day_type_flag"] = ops_decision["day_type_flag"].map({True: "Погоджено", False: "Відмовлено"})
 
-    # Стовпчаста діаграма з угрупованням (або стекова – обираємо з угрупованням для кращої читаності)
     fig_ops_dec = px.bar(
         ops_decision,
         x="operation",
