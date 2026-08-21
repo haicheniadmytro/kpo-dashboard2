@@ -106,34 +106,9 @@ def load_data():
                 month_rows.append((idx, parsed[0], parsed[1]))
 
         for month_idx, (header_row, month, year) in enumerate(month_rows):
-            # Знаходимо рядок з TRUE/FALSE
-            bool_row_idx = None
-            for r in range(header_row + 1, min(header_row + 20, len(values))):
-                row = values[r]
-                bool_vals = [v for v in row[4:] if v and v.strip() in ("TRUE", "FALSE", "True", "False")]
-                if len(bool_vals) > 0 and len(bool_vals) == len(row[4:]):
-                    bool_row_idx = r
-                    break
-
-            day_type_flags = None
-            if bool_row_idx is not None:
-                bool_row = values[bool_row_idx]
-                day_type_flags = []
-                for idx, val in enumerate(bool_row[4:]):
-                    if val and val.strip().lower() == "true":
-                        day_type_flags.append(True)
-                    elif val and val.strip().lower() == "false":
-                        day_type_flags.append(False)
-                    else:
-                        day_type_flags.append(None)
-            else:
-                day_type_flags = None
-
             # Знаходимо початок деталізованих операцій
             detail_start = None
             for r in range(header_row + 1, min(header_row + 30, len(values))):
-                if r == bool_row_idx:
-                    continue
                 if len(values[r]) > 3 and values[r][3] in OPERATIONS:
                     detail_start = r
                     break
@@ -142,11 +117,6 @@ def load_data():
                 continue
 
             days = pd.Period(f"{year}-{month:02d}").days_in_month
-
-            if day_type_flags is not None and len(day_type_flags) < days:
-                day_type_flags = day_type_flags + [None] * (days - len(day_type_flags))
-            elif day_type_flags is not None and len(day_type_flags) > days:
-                day_type_flags = day_type_flags[:days]
 
             for r in range(detail_start, len(values)):
                 if r >= len(values):
@@ -160,16 +130,13 @@ def load_data():
 
                 row = values[r]
                 for day_idx in range(days):
-                    col = 4 + day_idx
+                    col = 4 + day_idx  # E = index 4
                     value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
-                    day_flag = None
-                    if day_type_flags is not None and day_idx < len(day_type_flags):
-                        day_flag = day_type_flags[day_idx]
-
-                    if day_flag is None:
-                        day_flag = date.weekday() < 5
+                    # Визначаємо, чи це TRUE (парна колонка, починаючи з D)
+                    # D = індекс 3, E = індекс 4, тому day_idx=0 відповідає D (парний)
+                    is_true_col = (day_idx % 2 == 0)  # day_idx 0 -> D (парний), 1 -> E (непарний)
 
                     records.append(
                         {
@@ -181,7 +148,7 @@ def load_data():
                             "month_name": date.strftime("%b %Y"),
                             "weekday": date.day_name(),
                             "is_weekend": date.weekday() >= 5,
-                            "day_type_flag": day_flag,
+                            "is_true_col": is_true_col,  # TRUE, якщо парна колонка (D, F, H, ...)
                         }
                     )
 
@@ -190,8 +157,10 @@ def load_data():
     if df_raw.empty:
         raise ValueError("Не знайдено деталізованих даних у Google Таблиці.")
 
-    date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend", "day_type_flag"]].drop_duplicates("date")
+    # Додаємо метадані для дат
+    date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend"]].drop_duplicates("date")
 
+    # Групуємо за датою та операцією, сумуючи значення
     df_grouped = (
         df_raw.groupby(["date", "operation"], as_index=False)["value"]
         .sum()
@@ -200,6 +169,7 @@ def load_data():
 
     df = df_grouped.merge(date_metadata, on="date", how="left")
 
+    # Додаємо "Тотал"
     total = (
         df.groupby("date", as_index=False)["value"]
         .sum()
@@ -208,7 +178,28 @@ def load_data():
     total = total.merge(date_metadata, on="date", how="left")
     df = pd.concat([df, total], ignore_index=True)
 
-    df["day_type_flag"] = df["day_type_flag"].astype(bool)
+    # Для кожної дати та операції обчислюємо суми TRUE (парні колонки) і FALSE (непарні)
+    # Ми вже маємо детальні записи в df_raw, тому обчислюємо окремо
+    true_false_agg = (
+        df_raw.groupby(["date", "operation", "is_true_col"])["value"]
+        .sum()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
+    # Перейменовуємо колонки
+    true_false_agg.columns = ["date", "operation", "sum_false", "sum_true"]
+    # Якщо немає даних для TRUE або FALSE, заповнюємо нулями
+    true_false_agg["sum_true"] = true_false_agg.get("sum_true", 0)
+    true_false_agg["sum_false"] = true_false_agg.get("sum_false", 0)
+
+    # Додаємо суми TRUE/FALSE до основного df
+    df = df.merge(true_false_agg, on=["date", "operation"], how="left")
+    # Заповнюємо NaN нулями (якщо для якоїсь операції немає даних)
+    df["sum_true"] = df["sum_true"].fillna(0)
+    df["sum_false"] = df["sum_false"].fillna(0)
+
+    # Переконуємось, що sum_true + sum_false = value (для перевірки)
+    # Але через різні способи агрегації може бути незначна розбіжність через округлення – ігноруємо
 
     return df
 
@@ -373,12 +364,12 @@ if len(selected_months) == 1:
 
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
-# --- Коефіцієнт погоджень (TRUE / (TRUE+FALSE)) ---
-df_ratio = filtered.copy()
-sum_true = df_ratio[df_ratio["day_type_flag"] == True]["value"].sum()
-sum_false = df_ratio[df_ratio["day_type_flag"] == False]["value"].sum()
-total_ratio = sum_true + sum_false
-approval_rate = (sum_true / total_ratio * 100) if total_ratio > 0 else 0
+# --- Коефіцієнт погоджень (sum_true / (sum_true + sum_false)) ---
+# Сумуємо TRUE і FALSE за вибраний період та операцію
+sum_true_total = filtered["sum_true"].sum()
+sum_false_total = filtered["sum_false"].sum()
+total_ratio = sum_true_total + sum_false_total
+approval_rate = (sum_true_total / total_ratio * 100) if total_ratio > 0 else 0
 
 # Підготовка рядків для середніх
 avg_all = f"{daily_avg:.1f}" if not pd.isna(daily_avg) else "—"
@@ -424,15 +415,23 @@ with c4:
 c5.metric(
     "Коефіцієнт погоджень",
     f"{approval_rate:.1f}%" if total_ratio > 0 else "—",
-    help="Частка TRUE (погоджень) від загальної кількості (TRUE+FALSE) за вибраний період"
+    help="Частка TRUE (парні колонки) від загальної кількості (TRUE+FALSE) за вибраний період"
 )
 
-# Додаємо розширення для перевірки сум (діагностика)
+# --- ДІАГНОСТИКА (для перевірки сум) ---
 with st.expander("🔍 Деталі розрахунку коефіцієнта погоджень"):
-    st.write(f"**Сума TRUE:** {sum_true:.0f}")
-    st.write(f"**Сума FALSE:** {sum_false:.0f}")
+    st.write(f"**Сума TRUE (парні колонки):** {sum_true_total:.0f}")
+    st.write(f"**Сума FALSE (непарні колонки):** {sum_false_total:.0f}")
     st.write(f"**Загальна сума (TRUE+FALSE):** {total_ratio:.0f}")
     st.write(f"**Коефіцієнт:** {approval_rate:.1f}%")
+    st.write("---")
+    st.write("**Перевірка: чи сума TRUE+FALSE дорівнює загальній сумі?**")
+    st.write(f"Сума value: {filtered['value'].sum():.0f}")
+    st.write(f"Сума TRUE+FALSE: {total_ratio:.0f}")
+    if abs(filtered['value'].sum() - total_ratio) < 0.01:
+        st.success("✅ Суми збігаються!")
+    else:
+        st.warning("⚠️ Суми не збігаються – можливо, є операції без TRUE/FALSE розбивки.")
 
 st.divider()
 
@@ -534,7 +533,7 @@ with right:
     )
     st.plotly_chart(fig_mix, use_container_width=True)
 
-# Weekday/weekend (на основі is_weekend)
+# Weekday/weekend
 st.subheader("📅 Будні vs вихідні")
 
 week = (
