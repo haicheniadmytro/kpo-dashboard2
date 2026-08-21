@@ -209,20 +209,23 @@ def calc_busiest_operation(df):
     return busiest_op, busiest_val
 
 
-def calc_stability(df):
+def calc_stability(df, daily_avg):
+    """
+    Розраховує стандартне відхилення та коефіцієнт варіації.
+    daily_avg - середнє за календарні дні (з основної логіки).
+    """
     daily = df.groupby("date")["value"].sum()
     if daily.empty:
-        return 0, 0, 0, "Немає даних"
-    mean = daily.mean()
+        return 0, 0, "Немає даних"
     std = daily.std()
-    cv = (std / mean * 100) if mean > 0 else 0
+    cv = (std / daily_avg * 100) if daily_avg > 0 else 0
     if cv < 15:
         interpretation = "🟢 Низька варіативність (≤15%)"
     elif cv < 30:
         interpretation = "🟡 Середня варіативність (15-30%)"
     else:
         interpretation = "🔴 Висока варіативність (>30%)"
-    return mean, std, cv, interpretation
+    return std, cv, interpretation
 
 
 def detect_anomalies(df, window=14, threshold=1.5):
@@ -389,7 +392,7 @@ peak_avg_ratio = peak / daily_avg if daily_avg > 0 else 0
 
 busiest_weekday, busiest_weekday_val = calc_busiest_weekday(filtered)
 busiest_op, busiest_op_val = calc_busiest_operation(filtered)
-mean, std, cv, cv_interp = calc_stability(filtered)
+std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
 # --- Прогноз ---
 forecast = None
@@ -459,19 +462,25 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
 
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
-# --- CSS для зменшення шрифту метрик ---
+# --- CSS для компактного відображення метрик ---
 st.markdown("""
 <style>
-    div[data-testid="metric-container"] {
-        font-size: 0.9rem !important;
-    }
+    /* Зменшуємо шрифт для всіх метрик */
     div[data-testid="metric-container"] .stMetricValue {
-        font-size: 1.2rem !important;
+        font-size: 1rem !important;
         font-weight: 600 !important;
     }
     div[data-testid="metric-container"] .stMetricLabel {
-        font-size: 0.8rem !important;
+        font-size: 0.7rem !important;
         font-weight: 400 !important;
+    }
+    div[data-testid="metric-container"] {
+        font-size: 0.8rem !important;
+    }
+    /* Для компактності в порівнянні */
+    .comparison-text {
+        font-size: 0.7rem !important;
+        line-height: 1.3 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -530,12 +539,12 @@ with tab1:
                 parts = comparison_text.split("  ")
                 for part in parts:
                     st.markdown(
-                        f"<p style='font-size:0.75rem; margin:0; line-height:1.4;'>{part}</p>",
+                        f"<p class='comparison-text' style='margin:0;'>{part}</p>",
                         unsafe_allow_html=True
                     )
             else:
                 st.markdown(
-                    "<p style='font-size:0.75rem; margin:0;'>—</p>",
+                    "<p class='comparison-text' style='margin:0;'>—</p>",
                     unsafe_allow_html=True
                 )
         else:
@@ -599,15 +608,18 @@ with tab1:
     )
     st.plotly_chart(fig_overview, use_container_width=True)
 
-    # --- Прогноз (forecast band) без легенди ---
+    # --- Прогноз ---
     if forecast:
         st.subheader("📊 Прогноз на поточний місяць")
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Факт (на сьогодні)", f"{forecast['fact']:,.0f}")
-        col2.metric("Базовий прогноз", f"{forecast['base_forecast']:,.0f}")
-        col3.metric("Мінімальний", f"{forecast['min_forecast']:,.0f}")
-        col4.metric("Оптимістичний", f"{forecast['max_forecast']:,.0f}")
+        col2.metric("Базовий прогноз", f"{forecast['base_forecast']:,.0f}",
+                    help="Базовий прогноз = середнє за минулі дні × кількість днів у місяці")
+        col3.metric("Мінімальний", f"{forecast['min_forecast']:,.0f}",
+                    help="Мінімальний = (середнє за минулі дні - 0.5 × стандартне відхилення) × кількість днів (не менше 0)")
+        col4.metric("Оптимістичний", f"{forecast['max_forecast']:,.0f}",
+                    help="Оптимістичний = (середнє за минулі дні + 0.5 × стандартне відхилення) × кількість днів")
 
         fact_daily = filtered[filtered["date"].dt.day <= forecast["days_passed"]]
         fact_daily = fact_daily.groupby("date")["value"].sum().reset_index()
@@ -654,7 +666,7 @@ with tab1:
                 showlegend=False
             ))
 
-            # Смуга прогнозу (коридор)
+            # Смуга прогнозу
             fig_forecast.add_trace(go.Scatter(
                 x=list(future_dates) + list(future_dates)[::-1],
                 y=max_forecast_vals + min_forecast_vals[::-1],
@@ -702,7 +714,7 @@ with tab1:
                 hovermode="x unified",
                 height=400,
                 margin=dict(l=10, r=10, t=40, b=10),
-                showlegend=False,  # повністю вимикаємо легенду
+                showlegend=False,
             )
 
             st.plotly_chart(fig_forecast, use_container_width=True)
@@ -1031,10 +1043,12 @@ with tab4:
 
     st.subheader("📊 Стабільність навантаження")
     col1, col2, col3 = st.columns(3)
-    col1.metric("Середнє за день", f"{mean:.1f}" if mean > 0 else "—")
-    col2.metric("Стандартне відхилення", f"{std:.1f}" if std > 0 else "—")
+    col1.metric("Середнє за день", f"{daily_avg:.0f}" if daily_avg > 0 else "—",
+                help="Розраховано за тим самим принципом, що й в Overview")
+    col2.metric("Стандартне відхилення", f"{std:.1f}" if std > 0 else "—",
+                help="Стандартне відхилення денних сум")
     col3.metric("Коефіцієнт варіації (CV)", f"{cv:.1f}%" if cv > 0 else "—",
-                help="Коефіцієнт варіації: <15% - низька, 15-30% - середня, >30% - висока варіативність")
+                help="CV = (стандартне відхилення / середнє) × 100%")
 
     st.subheader("📈 Співвідношення пік / середнє")
     st.metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—",
