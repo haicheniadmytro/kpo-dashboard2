@@ -462,24 +462,26 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
 
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
-# --- CSS для компактного відображення метрик ---
+# --- CSS для компактних метрик (зменшені шрифти) ---
 st.markdown("""
 <style>
-    /* Зменшуємо шрифт для всіх метрик */
-    div[data-testid="metric-container"] .stMetricValue {
-        font-size: 1rem !important;
+    /* Значення метрик */
+    .stMetricValue {
+        font-size: 0.85rem !important;
         font-weight: 600 !important;
     }
-    div[data-testid="metric-container"] .stMetricLabel {
-        font-size: 0.7rem !important;
+    /* Підписи метрик */
+    .stMetricLabel {
+        font-size: 0.65rem !important;
         font-weight: 400 !important;
     }
-    div[data-testid="metric-container"] {
-        font-size: 0.8rem !important;
+    /* Контейнер метрики */
+    .stMetric {
+        font-size: 0.75rem !important;
     }
-    /* Для компактності в порівнянні */
+    /* Спеціальний клас для порівняння */
     .comparison-text {
-        font-size: 0.7rem !important;
+        font-size: 0.65rem !important;
         line-height: 1.3 !important;
     }
 </style>
@@ -617,9 +619,9 @@ with tab1:
         col2.metric("Базовий прогноз", f"{forecast['base_forecast']:,.0f}",
                     help="Базовий прогноз = середнє за минулі дні × кількість днів у місяці")
         col3.metric("Мінімальний", f"{forecast['min_forecast']:,.0f}",
-                    help="Мінімальний = (середнє за минулі дні - 0.5 × стандартне відхилення) × кількість днів (не менше 0)")
+                    help="Мінімальний = (середнє - 0.5 × стандартне відхилення) × кількість днів (не менше 0)")
         col4.metric("Оптимістичний", f"{forecast['max_forecast']:,.0f}",
-                    help="Оптимістичний = (середнє за минулі дні + 0.5 × стандартне відхилення) × кількість днів")
+                    help="Оптимістичний = (середнє + 0.5 × стандартне відхилення) × кількість днів")
 
         fact_daily = filtered[filtered["date"].dt.day <= forecast["days_passed"]]
         fact_daily = fact_daily.groupby("date")["value"].sum().reset_index()
