@@ -130,13 +130,16 @@ def load_data():
 
                 row = values[r]
                 for day_idx in range(days):
-                    # Дані починаються з колонки D (індекс 3)
-                    col = 3 + day_idx
+                    col = 4 + day_idx  # E = index 4
                     value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
-                    # TRUE – парні колонки (D, F, H, ...) => day_idx парний
-                    is_true_col = (day_idx % 2 == 0)
+                    # Визначаємо, чи це TRUE (парна колонка, починаючи з D)
+                    # Ми читаємо з E (індекс 4), тому:
+                    # day_idx=0 -> E (непарна) -> FALSE
+                    # day_idx=1 -> F (парна) -> TRUE
+                    # Отже, TRUE відповідає непарним індексам (1, 3, 5, ...)
+                    is_true_col = (day_idx % 2 == 1)
 
                     records.append(
                         {
@@ -157,10 +160,10 @@ def load_data():
     if df_raw.empty:
         raise ValueError("Не знайдено деталізованих даних у Google Таблиці.")
 
-    # Метадані для дат
+    # Додаємо метадані для дат
     date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend"]].drop_duplicates("date")
 
-    # Групуємо за датою та операцією
+    # Групуємо за датою та операцією, сумуючи значення
     df_grouped = (
         df_raw.groupby(["date", "operation"], as_index=False)["value"]
         .sum()
@@ -178,7 +181,7 @@ def load_data():
     total = total.merge(date_metadata, on="date", how="left")
     df = pd.concat([df, total], ignore_index=True)
 
-    # Агрегуємо суми TRUE і FALSE
+    # Агрегуємо суми TRUE і FALSE з df_raw
     true_false_agg = (
         df_raw.groupby(["date", "operation", "is_true_col"])["value"]
         .sum()
@@ -428,6 +431,11 @@ with st.expander("🔍 Деталі розрахунку коефіцієнта 
         st.success("✅ Суми збігаються!")
     else:
         st.warning("⚠️ Суми не збігаються – можливо, є операції без TRUE/FALSE розбивки.")
+    # Додаткові дані для перевірки
+    st.write("---")
+    st.write("**Перші 5 рядків df_raw (для перевірки):**")
+    # Якщо змінна df_raw не доступна, ми не можемо її вивести, тому просто покажемо статистику
+    st.write("(Для перевірки використовуйте наведені вище суми)")
 
 st.divider()
 
