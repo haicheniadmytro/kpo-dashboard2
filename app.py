@@ -241,10 +241,6 @@ def detect_anomalies(df, window=14, threshold=1.5):
 
 
 def forecast_scenarios(df, current_month):
-    """
-    Розраховує три сценарії прогнозу на основі середнього та стандартного відхилення.
-    Повертає словник з ключами: base, min, max, avg_daily, std_daily, total_days, days_passed, fact_sum
-    """
     if df.empty or current_month not in df["month"].values:
         return None
 
@@ -252,16 +248,13 @@ def forecast_scenarios(df, current_month):
     today = pd.Timestamp.now().normalize()
     days_passed = (today - pd.Timestamp(year=today.year, month=today.month, day=1)).days + 1
 
-    # Перевіряємо, чи поточний місяць є поточним календарним
     if today.month != pd.Period(current_month).month or today.year != pd.Period(current_month).year:
         return None
 
-    # Дані за дні, що минули
     fact_days = month_data[month_data["date"].dt.day <= days_passed]
     if fact_days.empty:
         return None
 
-    # Денні суми
     daily_sums = fact_days.groupby("date")["value"].sum()
     fact_sum = daily_sums.sum()
     avg_daily = daily_sums.mean()
@@ -269,7 +262,6 @@ def forecast_scenarios(df, current_month):
 
     total_days = pd.Period(current_month).days_in_month
 
-    # Прогнозні сценарії з використанням середнього ± 0.5 * std
     base_forecast = avg_daily * total_days
     min_forecast = max(0, (avg_daily - 0.5 * std_daily) * total_days)
     max_forecast = (avg_daily + 0.5 * std_daily) * total_days
@@ -379,7 +371,6 @@ if filtered.empty:
 daily_total = filtered.groupby("date")["value"].sum()
 total_value = daily_total.sum()
 
-# Кількість календарних днів у вибраному періоді (для поточного місяця – тільки дні, що минули)
 if len(selected_months) == 1:
     period = pd.Period(selected_months[0])
     today = pd.Timestamp.now().normalize()
@@ -467,6 +458,23 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
             comparison_parts.append(f"Мин. рік: {delta_year:+.1f}%")
 
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
+
+# --- CSS для зменшення шрифту метрик ---
+st.markdown("""
+<style>
+    div[data-testid="metric-container"] {
+        font-size: 0.9rem !important;
+    }
+    div[data-testid="metric-container"] .stMetricValue {
+        font-size: 1.2rem !important;
+        font-weight: 600 !important;
+    }
+    div[data-testid="metric-container"] .stMetricLabel {
+        font-size: 0.8rem !important;
+        font-weight: 400 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # --- Створення вкладок ---
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Динаміка", "🧩 Операції", "📅 Навантаження"])
@@ -591,7 +599,7 @@ with tab1:
     )
     st.plotly_chart(fig_overview, use_container_width=True)
 
-    # --- Прогноз (forecast band) ---
+    # --- Прогноз (forecast band) без легенди ---
     if forecast:
         st.subheader("📊 Прогноз на поточний місяць")
 
@@ -601,17 +609,12 @@ with tab1:
         col3.metric("Мінімальний", f"{forecast['min_forecast']:,.0f}")
         col4.metric("Оптимістичний", f"{forecast['max_forecast']:,.0f}")
 
-        # Побудова forecast band
-        # Фактичні денні накопичені суми
         fact_daily = filtered[filtered["date"].dt.day <= forecast["days_passed"]]
         fact_daily = fact_daily.groupby("date")["value"].sum().reset_index()
         fact_daily = fact_daily.sort_values("date")
         fact_daily["cumulative"] = fact_daily["value"].cumsum()
 
-        # Остання фактична дата
         last_fact_date = fact_daily["date"].max() if not fact_daily.empty else pd.Timestamp.now().normalize()
-
-        # Прогнозовані дні (з завтра до кінця місяця)
         future_dates = pd.date_range(
             start=last_fact_date + pd.Timedelta(days=1),
             end=pd.Timestamp(year=pd.Timestamp.now().year, month=pd.Timestamp.now().month, day=forecast["total_days"]),
@@ -623,7 +626,6 @@ with tab1:
             avg_daily = forecast["avg_daily"]
             std_daily = forecast["std_daily"]
 
-            # Розрахунок прогнозних накопичених сум для трьох сценаріїв
             cum_base = last_cum
             cum_min = last_cum
             cum_max = last_cum
@@ -639,57 +641,60 @@ with tab1:
                 min_forecast_vals.append(cum_min)
                 max_forecast_vals.append(cum_max)
 
-            # Побудова графіка
             fig_forecast = go.Figure()
 
-            # Додаємо фактичну лінію
+            # Фактична лінія
             fig_forecast.add_trace(go.Scatter(
                 x=fact_daily["date"],
                 y=fact_daily["cumulative"],
                 mode="lines+markers",
                 name="Факт",
                 line=dict(color="blue", width=2),
-                marker=dict(color="blue", size=6)
+                marker=dict(color="blue", size=6),
+                showlegend=False
             ))
 
-            # Додаємо смугу прогнозу (між мінімальним і оптимістичним)
-            # Спочатку оптимістичний, потім мінімальний (для заповнення)
+            # Смуга прогнозу (коридор)
             fig_forecast.add_trace(go.Scatter(
                 x=list(future_dates) + list(future_dates)[::-1],
                 y=max_forecast_vals + min_forecast_vals[::-1],
                 fill='toself',
                 fillcolor='rgba(255, 165, 0, 0.2)',
                 line=dict(color='rgba(255,165,0,0)'),
-                name='Прогнозний коридор'
+                name='Прогнозний коридор',
+                showlegend=False
             ))
 
-            # Додаємо базову лінію прогнозу
+            # Базовий прогноз
             fig_forecast.add_trace(go.Scatter(
                 x=future_dates,
                 y=base_forecast_vals,
                 mode="lines",
                 name="Базовий прогноз",
-                line=dict(color="orange", width=2, dash="dash")
+                line=dict(color="orange", width=2, dash="dash"),
+                showlegend=False
             ))
 
-            # Додаємо мінімальний і оптимістичний (як пунктирні лінії)
+            # Мінімальний прогноз
             fig_forecast.add_trace(go.Scatter(
                 x=future_dates,
                 y=min_forecast_vals,
                 mode="lines",
                 name="Мінімальний",
-                line=dict(color="red", width=1.5, dash="dot")
+                line=dict(color="red", width=1.5, dash="dot"),
+                showlegend=False
             ))
 
+            # Оптимістичний прогноз
             fig_forecast.add_trace(go.Scatter(
                 x=future_dates,
                 y=max_forecast_vals,
                 mode="lines",
                 name="Оптимістичний",
-                line=dict(color="green", width=1.5, dash="dot")
+                line=dict(color="green", width=1.5, dash="dot"),
+                showlegend=False
             ))
 
-            # Оновлення макету
             fig_forecast.update_layout(
                 title="Накопичена кількість: факт та прогнозні сценарії",
                 xaxis=dict(title="Дата", tickformat="%d.%m"),
@@ -697,7 +702,7 @@ with tab1:
                 hovermode="x unified",
                 height=400,
                 margin=dict(l=10, r=10, t=40, b=10),
-                legend=dict(x=0.02, y=0.98, bgcolor="rgba(255,255,255,0.8)")
+                showlegend=False,  # повністю вимикаємо легенду
             )
 
             st.plotly_chart(fig_forecast, use_container_width=True)
