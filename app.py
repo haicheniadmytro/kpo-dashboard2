@@ -359,7 +359,23 @@ c3.metric(
     f"{forecast:,.0f}" if forecast is not None else "—",
     help="Прогноз на поточний місяць, розрахований на основі середнього за дні, що минули"
 )
-c4.metric("Порівняння", comparison_text)
+
+# Кастомне відображення для "Порівняння" – у два рядки з меншим шрифтом
+with c4:
+    st.markdown("**Порівняння**")
+    if comparison_text != "—":
+        # Розділяємо за подвійним пробілом (як ми з'єднували)
+        parts = comparison_text.split("  ")
+        for part in parts:
+            st.markdown(
+                f"<p style='font-size:0.85rem; margin:0; line-height:1.4;'>{part}</p>",
+                unsafe_allow_html=True
+            )
+    else:
+        st.markdown(
+            "<p style='font-size:0.85rem; margin:0;'>—</p>",
+            unsafe_allow_html=True
+        )
 
 st.divider()
 
