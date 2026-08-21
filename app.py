@@ -1,4 +1,3 @@
-
 import re
 from datetime import datetime
 from pathlib import Path
@@ -113,9 +112,6 @@ def load_data():
                 month_rows.append((idx, parsed[0], parsed[1]))
 
         for month_idx, (header_row, month, year) in enumerate(month_rows):
-            # Find the first detailed operation row after the month title.
-            # We don't rely on the date row because several historical
-            # months contain cells with inconsistent date formatting.
             detail_start = None
             for r in range(header_row + 1, min(header_row + 20, len(values))):
                 if len(values[r]) > 3 and values[r][3] in OPERATIONS:
@@ -125,10 +121,8 @@ def load_data():
             if detail_start is None:
                 continue
 
-            # Number of days in the month.
             days = pd.Period(f"{year}-{month:02d}").days_in_month
 
-            # The source layout places daily values from column E onward.
             for r in range(detail_start, len(values)):
                 if r >= len(values):
                     break
@@ -163,7 +157,6 @@ def load_data():
     if df.empty:
         raise ValueError("Не знайдено деталізованих даних у Google Таблиці.")
 
-    # Remove duplicated rows if the source sheet contains accidental repeats.
     df = (
         df.groupby(["date", "operation"], as_index=False)["value"]
         .sum()
@@ -176,8 +169,6 @@ def load_data():
     df["weekday"] = df["date"].dt.day_name()
     df["is_weekend"] = df["date"].dt.weekday >= 5
 
-    # Total is calculated from the operation categories. This also keeps
-    # the dashboard independent from summary cells in the source layout.
     total = (
         df.groupby("date", as_index=False)["value"]
         .sum()
@@ -245,6 +236,15 @@ selected_operation = st.sidebar.selectbox(
     index=0,
 )
 
+# Smoothing options
+st.sidebar.divider()
+st.sidebar.subheader("Налаштування графіків")
+smooth_enabled = st.sidebar.checkbox("Згладжування динаміки (ковзне середнє)", value=False)
+smooth_window = 7
+if smooth_enabled:
+    smooth_window = st.sidebar.selectbox("Вікно згладжування (дні)", [3, 5, 7, 14], index=2)
+
+# Filter data
 filtered = df[
     df["year"].isin(selected_years)
     & df["month"].isin(selected_months)
@@ -302,6 +302,19 @@ fig_daily = px.line(
     markers=True,
     labels={"date": "Дата", "value": "Кількість"},
 )
+if smooth_enabled:
+    # Додаємо згладжену лінію (ковзне середнє)
+    daily_smooth = daily.copy()
+    daily_smooth["value_smooth"] = daily_smooth["value"].rolling(
+        window=smooth_window, min_periods=1, center=True
+    ).mean()
+    fig_daily.add_scatter(
+        x=daily_smooth["date"],
+        y=daily_smooth["value_smooth"],
+        mode="lines",
+        name=f"Ковзне середнє ({smooth_window} дн.)",
+        line=dict(color="orange", width=3),
+    )
 fig_daily.update_layout(
     height=420,
     hovermode="x unified",
@@ -322,13 +335,19 @@ with left:
     monthly["month_label"] = monthly["month"].apply(
         lambda x: pd.Period(x).strftime("%m.%Y")
     )
+    # Відсотки
+    total_monthly = monthly["value"].sum()
+    monthly["percent"] = (monthly["value"] / total_monthly * 100).round(1)
+    monthly["text"] = monthly["percent"].astype(str) + "%"
 
     fig_month = px.bar(
         monthly,
         x="month_label",
         y="value",
+        text="text",
         labels={"month_label": "Місяць", "value": "Кількість"},
     )
+    fig_month.update_traces(textposition="outside")
     fig_month.update_layout(
         height=360,
         margin=dict(l=10, r=10, t=20, b=10),
@@ -347,14 +366,19 @@ with right:
         .sum()
         .sort_values("value", ascending=False)
     )
+    total_ops = mix["value"].sum()
+    mix["percent"] = (mix["value"] / total_ops * 100).round(1)
+    mix["text"] = mix["percent"].astype(str) + "%"
 
     fig_mix = px.bar(
         mix,
         x="value",
         y="operation",
+        text="text",
         orientation="h",
         labels={"value": "Кількість", "operation": "Операція"},
     )
+    fig_mix.update_traces(textposition="outside")
     fig_mix.update_layout(
         height=360,
         margin=dict(l=10, r=10, t=20, b=10),
@@ -396,6 +420,89 @@ fig_week.update_layout(
     margin=dict(l=10, r=10, t=20, b=10),
 )
 st.plotly_chart(fig_week, use_container_width=True)
+
+# --- НОВІ ВІЗУАЛІЗАЦІЇ ---
+st.divider()
+st.subheader("➕ Додаткові аналітичні графіки")
+
+# 1. Теплова карта: день тижня × місяць (середнє)
+with st.expander("🌡️ Теплова карта «День тижня × Місяць»"):
+    heat_data = filtered.groupby(["month", "weekday"], as_index=False)["value"].mean()
+    heat_pivot = heat_data.pivot(index="month", columns="weekday", values="value").fillna(0)
+    weekdays_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    days_ua = {
+        "Monday": "Пн", "Tuesday": "Вт", "Wednesday": "Ср",
+        "Thursday": "Чт", "Friday": "Пт", "Saturday": "Сб", "Sunday": "Нд"
+    }
+    heat_pivot = heat_pivot.reindex(columns=weekdays_order)
+    heat_pivot.columns = [days_ua[col] for col in heat_pivot.columns]
+    heat_pivot.index = pd.PeriodIndex(heat_pivot.index, freq="M")
+    heat_pivot = heat_pivot.sort_index()
+    heat_pivot.index = heat_pivot.index.strftime("%m.%Y")
+
+    fig_heat = px.imshow(
+        heat_pivot,
+        text_auto=".1f",
+        aspect="auto",
+        labels=dict(x="День тижня", y="Місяць", color="Середнє"),
+        color_continuous_scale="Blues",
+    )
+    fig_heat.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10))
+    st.plotly_chart(fig_heat, use_container_width=True)
+
+# 2. Накопичувальна сума
+with st.expander("📈 Накопичувальна сума за період"):
+    cumsum = filtered.groupby("date", as_index=False)["value"].sum().sort_values("date")
+    cumsum["cumulative"] = cumsum["value"].cumsum()
+    fig_cum = px.line(
+        cumsum,
+        x="date",
+        y="cumulative",
+        markers=True,
+        labels={"date": "Дата", "cumulative": "Накопичена кількість"},
+    )
+    fig_cum.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
+    st.plotly_chart(fig_cum, use_container_width=True)
+
+# 3. Боксплот за днями тижня
+with st.expander("📦 Розподіл за днями тижня (Boxplot)"):
+    box_data = filtered.groupby(["date", "weekday"], as_index=False)["value"].sum()
+    box_data["weekday_ua"] = box_data["weekday"].map(days_ua)
+    order = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
+    fig_box = px.box(
+        box_data,
+        x="weekday_ua",
+        y="value",
+        category_orders={"weekday_ua": order},
+        labels={"weekday_ua": "День тижня", "value": "Кількість"},
+        color="weekday_ua",
+        color_discrete_sequence=px.colors.qualitative.Set2,
+    )
+    fig_box.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10), showlegend=False)
+    st.plotly_chart(fig_box, use_container_width=True)
+
+# 4. Порівняння двох місяців (якщо вибрано рівно 2 місяці)
+if len(selected_months) == 2:
+    with st.expander("📊 Порівняння двох місяців (денна динаміка)"):
+        two_months = filtered[filtered["month"].isin(selected_months)].copy()
+        two_months["month_label"] = two_months["month"].apply(
+            lambda x: pd.Period(x).strftime("%m.%Y")
+        )
+        daily_two = (
+            two_months.groupby(["date", "month_label"], as_index=False)["value"]
+            .sum()
+            .sort_values("date")
+        )
+        fig_two = px.line(
+            daily_two,
+            x="date",
+            y="value",
+            color="month_label",
+            markers=True,
+            labels={"date": "Дата", "value": "Кількість", "month_label": "Місяць"},
+        )
+        fig_two.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10))
+        st.plotly_chart(fig_two, use_container_width=True)
 
 # Detailed table
 with st.expander("🔎 Показати дані"):
