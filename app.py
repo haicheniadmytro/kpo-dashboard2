@@ -130,13 +130,16 @@ def load_data():
 
                 row = values[r]
                 for day_idx in range(days):
-                    # Дані починаються з колонки D (індекс 3)
-                    col = 3 + day_idx
+                    col = 4 + day_idx  # E = index 4
                     value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
-                    # TRUE – парні колонки (D, F, H, ...) => day_idx парний
-                    is_true_col = (day_idx % 2 == 0)
+                    # Визначаємо, чи це TRUE (парна колонка, починаючи з D)
+                    # Ми читаємо з E (індекс 4), тому:
+                    # day_idx=0 -> E (непарна) -> FALSE
+                    # day_idx=1 -> F (парна) -> TRUE
+                    # Отже, TRUE відповідає непарним індексам (1, 3, 5, ...)
+                    is_true_col = (day_idx % 2 == 1)
 
                     records.append(
                         {
@@ -157,10 +160,10 @@ def load_data():
     if df_raw.empty:
         raise ValueError("Не знайдено деталізованих даних у Google Таблиці.")
 
-    # Метадані для дат
+    # Додаємо метадані для дат
     date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend"]].drop_duplicates("date")
 
-    # Групуємо за датою та операцією
+    # Групуємо за датою та операцією, сумуючи значення
     df_grouped = (
         df_raw.groupby(["date", "operation"], as_index=False)["value"]
         .sum()
@@ -178,39 +181,23 @@ def load_data():
     total = total.merge(date_metadata, on="date", how="left")
     df = pd.concat([df, total], ignore_index=True)
 
-    # --- Агрегація TRUE/FALSE за допомогою pivot ---
-    # Спочатку групуємо за date, operation, is_true_col і сумуємо значення
+    # Агрегуємо суми TRUE і FALSE з df_raw
     true_false_agg = (
         df_raw.groupby(["date", "operation", "is_true_col"])["value"]
         .sum()
+        .unstack(fill_value=0)
         .reset_index()
     )
-    # Розвертаємо is_true_col в окремі колонки
-    true_false_pivot = true_false_agg.pivot(
-        index=["date", "operation"],
-        columns="is_true_col",
-        values="value"
-    ).fillna(0).reset_index()
-    # Перейменовуємо колонки: тепер вони називаються True і False (або 1 і 0)
-    # Оскільки is_true_col була булевою, колонки будуть False і True.
-    # Ми хочемо мати sum_false і sum_true незалежно від порядку.
-    # Перевіряємо, які колонки є
-    col_mapping = {}
-    for col in true_false_pivot.columns:
-        if col in [True, 1, "True", "1"]:
-            col_mapping[col] = "sum_true"
-        elif col in [False, 0, "False", "0"]:
-            col_mapping[col] = "sum_false"
-    true_false_pivot = true_false_pivot.rename(columns=col_mapping)
-    # Якщо якоїсь колонки немає, додаємо її з нулями
-    if "sum_true" not in true_false_pivot.columns:
-        true_false_pivot["sum_true"] = 0
-    if "sum_false" not in true_false_pivot.columns:
-        true_false_pivot["sum_false"] = 0
+    # Перейменовуємо колонки: is_true_col=False -> sum_false, is_true_col=True -> sum_true
+    true_false_agg.columns = ["date", "operation", "sum_false", "sum_true"]
+    # Якщо якоїсь колонки немає, додаємо
+    if "sum_true" not in true_false_agg.columns:
+        true_false_agg["sum_true"] = 0
+    if "sum_false" not in true_false_agg.columns:
+        true_false_agg["sum_false"] = 0
 
     # Додаємо суми TRUE/FALSE до основного df
-    df = df.merge(true_false_pivot[["date", "operation", "sum_true", "sum_false"]],
-                  on=["date", "operation"], how="left")
+    df = df.merge(true_false_agg, on=["date", "operation"], how="left")
     df["sum_true"] = df["sum_true"].fillna(0)
     df["sum_false"] = df["sum_false"].fillna(0)
 
@@ -444,11 +431,11 @@ with st.expander("🔍 Деталі розрахунку коефіцієнта 
         st.success("✅ Суми збігаються!")
     else:
         st.warning("⚠️ Суми не збігаються – можливо, є операції без TRUE/FALSE розбивки.")
-    # Додаткова діагностика: покажемо перші 5 рядків df_raw
-    # Для цього нам потрібно мати df_raw, але ми його не зберігаємо. Тому просто виведемо перші 5 записів з df (що містить суми)
+    # Додаткові дані для перевірки
     st.write("---")
-    st.write("**Перші 5 рядків df (після агрегації):**")
-    st.dataframe(filtered[["date", "operation", "value", "sum_true", "sum_false"]].head(5))
+    st.write("**Перші 5 рядків df_raw (для перевірки):**")
+    # Якщо змінна df_raw не доступна, ми не можемо її вивести, тому просто покажемо статистику
+    st.write("(Для перевірки використовуйте наведені вище суми)")
 
 st.divider()
 
