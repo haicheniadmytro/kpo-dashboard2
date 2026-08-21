@@ -261,19 +261,40 @@ daily_avg = filtered.groupby("date")["value"].sum().mean()
 daily_max = filtered.groupby("date")["value"].sum().max()
 daily_min = filtered.groupby("date")["value"].sum().min()
 
-previous_period = None
+# --- Оновлена логіка порівняння з попереднім місяцем ---
+delta = None
 if len(selected_months) == 1:
     current_period = pd.Period(selected_months[0])
     previous_period = current_period - 1
-    prev_key = str(previous_period)
-    prev = df[
-        (df["month"] == prev_key)
-        & (df["operation"] == selected_operation)
-    ]["value"].sum()
-    current = filtered["value"].sum()
-    delta = metric_delta(current, prev)
-else:
-    delta = None
+    today = pd.Timestamp.now().normalize()  # поточна дата без часу
+
+    # Перевіряємо, чи вибраний місяць уже почався
+    if current_period.start_time > today:
+        # Місяць ще не настав – дельту не показуємо
+        delta = None
+    else:
+        # Визначаємо, чи завершений вибраний місяць
+        if current_period.end_time <= today:
+            # Місяць повністю завершений – беремо повні суми
+            current = filtered["value"].sum()
+            prev = df[
+                (df["month"] == str(previous_period))
+                & (df["operation"] == selected_operation)
+            ]["value"].sum()
+        else:
+            # Поточний місяць – порівнюємо за днями до сьогодні
+            day_limit = today.day
+            # Сума за дні 1..day_limit у поточному місяці
+            current = filtered[filtered["date"].dt.day <= day_limit]["value"].sum()
+            # Для попереднього місяця – обмежуємо кількістю днів у ньому
+            days_in_prev = previous_period.days_in_month
+            day_limit_prev = min(day_limit, days_in_prev)
+            prev = df[
+                (df["month"] == str(previous_period))
+                & (df["operation"] == selected_operation)
+                & (df["date"].dt.day <= day_limit_prev)
+            ]["value"].sum()
+        delta = metric_delta(current, prev)
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Всього", f"{total_value:,.0f}")
@@ -303,7 +324,6 @@ fig_daily = px.line(
     labels={"date": "Дата", "value": "Кількість"},
 )
 if smooth_enabled:
-    # Додаємо згладжену лінію (ковзне середнє)
     daily_smooth = daily.copy()
     daily_smooth["value_smooth"] = daily_smooth["value"].rolling(
         window=smooth_window, min_periods=1, center=True
@@ -335,7 +355,6 @@ with left:
     monthly["month_label"] = monthly["month"].apply(
         lambda x: pd.Period(x).strftime("%m.%Y")
     )
-    # Відсотки
     total_monthly = monthly["value"].sum()
     monthly["percent"] = (monthly["value"] / total_monthly * 100).round(1)
     monthly["text"] = monthly["percent"].astype(str) + "%"
@@ -421,7 +440,7 @@ fig_week.update_layout(
 )
 st.plotly_chart(fig_week, use_container_width=True)
 
-# --- НОВІ ВІЗУАЛІЗАЦІЇ ---
+# --- ДОДАТКОВІ ВІЗУАЛІЗАЦІЇ ---
 st.divider()
 st.subheader("➕ Додаткові аналітичні графіки")
 
