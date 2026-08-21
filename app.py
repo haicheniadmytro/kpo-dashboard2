@@ -210,10 +210,6 @@ def calc_busiest_operation(df):
 
 
 def calc_stability(df, daily_avg):
-    """
-    Розраховує стандартне відхилення та коефіцієнт варіації на основі денних сум у df.
-    daily_avg - середнє за календарні дні (з основної логіки).
-    """
     daily = df.groupby("date")["value"].sum()
     if daily.empty:
         return 0, 0, "Немає даних"
@@ -375,7 +371,6 @@ today = pd.Timestamp.now().normalize()
 if len(selected_months) == 1:
     period = pd.Period(selected_months[0])
     if period.start_time <= today <= period.end_time:
-        # Поточний місяць: обмежуємо дані тільки минулими днями
         filtered = filtered[filtered["date"] <= today]
         num_days = (today - period.start_time).days + 1
     else:
@@ -387,7 +382,7 @@ if filtered.empty:
     st.warning("За вибраними фільтрами даних немає (можливо, ще немає даних за цей місяць).")
     st.stop()
 
-# --- Розрахунок базових метрик (на основі відфільтрованих даних) ---
+# --- Розрахунок базових метрик ---
 daily_total = filtered.groupby("date")["value"].sum()
 total_value = daily_total.sum()
 daily_avg = total_value / num_days if num_days > 0 else 0
@@ -400,7 +395,7 @@ busiest_weekday, busiest_weekday_val = calc_busiest_weekday(filtered)
 busiest_op, busiest_op_val = calc_busiest_operation(filtered)
 std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
-# --- Прогноз (використовує оригінальний df, не обрізаний filtered) ---
+# --- Прогноз ---
 forecast = None
 if len(selected_months) == 1 and operation_mode == "Тотал":
     forecast_data = forecast_scenarios(df[df["operation"] == "Тотал"], selected_months[0])
@@ -469,9 +464,8 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
 
-# --- Допоміжна функція для кастомних метрик ---
+# --- Допоміжна функція для кастомних метрик (збільшені шрифти) ---
 def custom_metric(label, value, help_text=None):
-    """Створює кастомну метрику з однаковим компактним стилем."""
     help_icon = f'<span class="help-icon" title="{help_text}">?</span>' if help_text else ""
     return f"""
     <div class="metric-container">
@@ -481,44 +475,45 @@ def custom_metric(label, value, help_text=None):
     """
 
 
-# --- CSS для кастомних метрик ---
+# --- CSS для кастомних метрик (збільшені шрифти, чорний колір) ---
 st.markdown("""
 <style>
     .metric-container {
         background: transparent;
-        padding: 0.2rem 0;
+        padding: 0.3rem 0;
         border: none;
     }
     .metric-label {
-        font-size: 0.65rem !important;
-        color: rgba(49, 51, 63, 0.7);
+        font-size: 0.8rem !important;
+        color: #262730 !important;
         font-weight: 400;
         letter-spacing: 0.02em;
-        margin-bottom: 0.1rem;
+        margin-bottom: 0.15rem;
     }
     .metric-value {
-        font-size: 0.9rem !important;
+        font-size: 1.3rem !important;
         font-weight: 600;
-        color: rgba(49, 51, 63, 1);
+        color: #262730 !important;
         line-height: 1.2;
     }
     .help-icon {
         display: inline-block;
         background: rgba(49, 51, 63, 0.15);
         border-radius: 50%;
-        width: 14px;
-        height: 14px;
+        width: 16px;
+        height: 16px;
         text-align: center;
-        line-height: 14px;
-        font-size: 0.55rem;
-        color: rgba(49, 51, 63, 0.7);
+        line-height: 16px;
+        font-size: 0.65rem;
+        color: #262730;
         cursor: help;
-        margin-left: 2px;
+        margin-left: 3px;
     }
     .comparison-text {
-        font-size: 0.65rem !important;
+        font-size: 0.8rem !important;
         line-height: 1.3 !important;
         margin: 0 !important;
+        color: #262730 !important;
     }
 </style>
 """, unsafe_allow_html=True)
