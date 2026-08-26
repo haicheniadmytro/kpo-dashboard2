@@ -286,7 +286,8 @@ def forecast_scenarios(df, current_month):
 
     # --- 2. СЕЗОННИЙ ПРОГНОЗ (на основі минулого року) ---
     current_period = pd.Period(current_month)
-    prev_period = current_period - 1
+    # Отримуємо аналогічний місяць минулого року (на 12 місяців назад)
+    prev_period = current_period - 12
     prev_period_str = str(prev_period)
 
     if prev_period_str in df["month"].unique():
@@ -317,6 +318,7 @@ def forecast_scenarios(df, current_month):
                 "prev_remaining_sum": prev_remaining["value"].sum(),
                 "forecast_remaining": forecast_remaining,
                 "has_prev_year": True,
+                "prev_period": prev_period_str,
             }
         else:
             season_forecast = None
@@ -467,7 +469,7 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
     current_period = pd.Period(selected_months[0])
     today_comp = pd.Timestamp.now().normalize()
 
-    prev_period = current_period - 1
+    prev_period = current_period - 1  # попередній місяць (для порівняння «до попереднього місяця»)
     if current_period.end_time <= today_comp:
         cur_sum = daily_total.sum()
         prev_sum = df[
@@ -490,6 +492,7 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
     if delta_prev is not None:
         comparison_parts.append(f"Попер. міс: {delta_prev:+.1f}%")
 
+    # Порівняння з аналогічним місяцем минулого року (для відображення в «Порівняння»)
     year_prev = current_period.year - 1
     month_num = current_period.month
     prev_year_period = pd.Period(year=year_prev, month=month_num, freq="M")
@@ -702,6 +705,7 @@ with tab1:
 
             # Детальна інформація для перевірки
             with st.expander("🔍 Деталі розрахунку сезонного прогнозу"):
+                st.write(f"**Період минулого року:** {season_forecast['prev_period']}")
                 st.write(f"**Днів минуло:** {season_forecast['days_passed']}")
                 st.write(f"**Сума за поточний період (факт):** {season_forecast['fact']:,.0f}")
                 st.write(f"**Сума за аналогічний період минулого року:** {season_forecast['prev_fact_sum']:,.0f}")
