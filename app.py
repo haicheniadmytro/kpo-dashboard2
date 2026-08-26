@@ -764,6 +764,12 @@ with tab1:
         if operation_mode == "Вибрані операції":
             st.write("**Операції:**", ", ".join(selected_operations))
         st.write("---")
+        # Показуємо суми TRUE/FALSE по кожній операції окремо
+        if operation_mode != "Тотал":
+            st.write("**Суми TRUE/FALSE по вибраних операціях:**")
+            ops_summary = filtered.groupby("operation")[["sum_true", "sum_false"]].sum().reset_index()
+            st.dataframe(ops_summary, use_container_width=True, hide_index=True)
+        st.write("---")
         st.write("**Перші 5 рядків відфільтрованих даних (date, operation, sum_true, sum_false):**")
         sample = filtered[["date", "operation", "sum_true", "sum_false"]].head(5)
         sample["date"] = sample["date"].dt.strftime("%d.%m.%Y")
