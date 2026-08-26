@@ -8,6 +8,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from google.oauth2.service_account import Credentials
+from scipy.stats import gaussian_kde
+import numpy as np
 
 
 st.set_page_config(
@@ -1106,8 +1108,8 @@ with tab4:
     col2.markdown(custom_metric("Стандартне відхилення", f"{std:.1f}" if std > 0 else "—", "Стандартне відхилення денних сум (лише фактичні дні)"), unsafe_allow_html=True)
     col3.markdown(custom_metric("Коефіцієнт варіації (CV)", f"{cv:.1f}%" if cv > 0 else "—", "CV = (стандартне відхилення / середнє) × 100%"), unsafe_allow_html=True)
 
-    # --- НОВИЙ ГРАФІК: Гістограма відхилень ---
-    st.subheader("📊 Розподіл відхилень від середнього (гістограма)")
+    # --- НОВИЙ ГРАФІК: Крива щільності відхилень ---
+    st.subheader("📊 Розподіл відхилень від середнього (крива щільності)")
 
     # Підготовка даних
     daily_totals = filtered.groupby("date")["value"].sum().reset_index()
@@ -1115,7 +1117,7 @@ with tab4:
     daily_totals["weekday"] = daily_totals["date"].dt.day_name()
 
     if daily_totals.empty or len(daily_totals) < 3:
-        st.info("Недостатньо даних для побудови гістограми розподілу.")
+        st.info("Недостатньо даних для побудови графіка розподілу.")
     else:
         # Загальне середнє
         mean_all = daily_totals["value"].mean()
@@ -1139,77 +1141,63 @@ with tab4:
         ) if mean_weekend is not None and mean_weekend != 0 else None
 
         # Збираємо дані для трьох груп
-        dev_dfs = []
+        dev_data = []
+        group_names = []
         # Всі дні
-        df_all = daily_totals[["date", "dev_all"]].copy()
-        df_all["group"] = "Всі дні"
-        df_all = df_all.rename(columns={"dev_all": "deviation"})
-        dev_dfs.append(df_all)
-
+        dev_all = daily_totals["dev_all"].dropna().values
+        if len(dev_all) > 1:
+            dev_data.append(dev_all)
+            group_names.append("Всі дні")
         # Будні
-        if mean_weekday is not None:
-            df_wd = daily_totals[weekday_mask][["date", "dev_weekday"]].copy()
-            df_wd["group"] = "Будні"
-            df_wd = df_wd.rename(columns={"dev_weekday": "deviation"})
-            dev_dfs.append(df_wd)
-
+        dev_wd = daily_totals.loc[weekday_mask, "dev_weekday"].dropna().values if weekday_mask.any() else np.array([])
+        if len(dev_wd) > 1:
+            dev_data.append(dev_wd)
+            group_names.append("Будні")
         # Вихідні
-        if mean_weekend is not None:
-            df_we = daily_totals[weekend_mask][["date", "dev_weekend"]].copy()
-            df_we["group"] = "Вихідні"
-            df_we = df_we.rename(columns={"dev_weekend": "deviation"})
-            dev_dfs.append(df_we)
+        dev_we = daily_totals.loc[weekend_mask, "dev_weekend"].dropna().values if weekend_mask.any() else np.array([])
+        if len(dev_we) > 1:
+            dev_data.append(dev_we)
+            group_names.append("Вихідні")
 
-        dev_df = pd.concat(dev_dfs, ignore_index=True)
-        dev_df = dev_df.dropna(subset=["deviation"])
-
-        if dev_df.empty:
-            st.info("Недостатньо даних для побудови гістограми розподілу.")
+        if not dev_data:
+            st.info("Недостатньо даних для побудови кривих щільності.")
         else:
-            # Визначаємо кількість бінів (можна зробити автоматично або задати)
-            n_bins = 15  # можна налаштувати
+            # Створюємо графік
+            fig_density = go.Figure()
 
-            # Створюємо три окремі гістограми в трьох колонках
-            col1, col2, col3 = st.columns(3)
+            colors = {"Всі дні": "blue", "Будні": "green", "Вихідні": "orange"}
 
-            groups = dev_df["group"].unique()
-            # Впорядковуємо групи: Всі дні, Будні, Вихідні
-            group_order = ["Всі дні", "Будні", "Вихідні"]
-            group_order = [g for g in group_order if g in groups]
+            # Для кожної групи будуємо криву щільності
+            for group_name, data in zip(group_names, dev_data):
+                # Обчислюємо криву щільності за допомогою gaussian_kde
+                if len(data) > 1:
+                    kde = gaussian_kde(data)
+                    x_range = np.linspace(data.min() - 10, data.max() + 10, 200)
+                    y_density = kde(x_range)
+                    fig_density.add_trace(go.Scatter(
+                        x=x_range,
+                        y=y_density,
+                        mode='lines',
+                        name=group_name,
+                        line=dict(color=colors.get(group_name, "gray"), width=2),
+                        fill='tozeroy',
+                        fillcolor=colors.get(group_name, "gray") + '33',  # напівпрозорий
+                    ))
 
-            for i, group_name in enumerate(group_order):
-                data = dev_df[dev_df["group"] == group_name]["deviation"]
-                if data.empty:
-                    continue
+            # Додаємо вертикальну лінію на 0%
+            fig_density.add_vline(x=0, line_dash="dash", line_color="red", annotation_text="0% (середнє)")
 
-                fig_hist = px.histogram(
-                    data,
-                    nbins=n_bins,
-                    labels={"value": "Відхилення, %", "count": "Кількість днів"},
-                    title=group_name,
-                    color_discrete_sequence=["#2E86C1"],
-                )
-                # Додаємо вертикальну лінію на 0%
-                fig_hist.add_vline(x=0, line_dash="dash", line_color="red", annotation_text="0%")
+            fig_density.update_layout(
+                title="Криві щільності відхилень від середнього",
+                xaxis_title="Відхилення, %",
+                yaxis_title="Щільність",
+                height=400,
+                margin=dict(l=10, r=10, t=40, b=10),
+                legend=dict(title="Група"),
+                hovermode="x unified"
+            )
 
-                # Оновлюємо макет
-                fig_hist.update_layout(
-                    height=300,
-                    margin=dict(l=10, r=10, t=30, b=10),
-                    xaxis_title="Відхилення, %",
-                    yaxis_title="Кількість днів",
-                )
-
-                # Відображаємо в колонці
-                if i == 0:
-                    with col1:
-                        st.plotly_chart(fig_hist, use_container_width=True)
-                elif i == 1:
-                    with col2:
-                        st.plotly_chart(fig_hist, use_container_width=True)
-                elif i == 2:
-                    with col3:
-                        st.plotly_chart(fig_hist, use_container_width=True)
+            st.plotly_chart(fig_density, use_container_width=True)
 
             # Показуємо статистику під графіком
             stats = []
