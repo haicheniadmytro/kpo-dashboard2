@@ -242,25 +242,25 @@ def detect_anomalies(df, window=14, threshold=1.5):
 
 def gaussian_kde_np(data, x_grid, bandwidth=None):
     """
-    Обчислення оцінки густини за допомогою гауссового ядра.
-    data — одновимірний масив значень.
-    x_grid — координати, де обчислюється густина.
-    bandwidth — ширина вікна (якщо None, використовується правило Сільвермана).
+    Обчислення оцінки густини за допомогою гауссового ядра (векторизована версія).
     """
-    data = np.asarray(data)
+    data = np.asarray(data, dtype=float)
+    # Видаляємо NaN та Inf
+    data = data[np.isfinite(data)]
     n = len(data)
     if n == 0:
         return np.zeros_like(x_grid)
-    if bandwidth is None:
-        # Правило Сільвермана
-        bandwidth = 1.06 * np.std(data) * n ** (-0.2)
-        if bandwidth == 0:
-            bandwidth = 1.0  # якщо всі значення однакові
-    density = np.zeros_like(x_grid)
-    for i, xi in enumerate(x_grid):
-        u = (xi - data) / bandwidth
-        density[i] = np.sum(np.exp(-0.5 * u * u))
-    density /= n * bandwidth * np.sqrt(2 * np.pi)
+    # Якщо всі значення однакові, використовуємо вузьке вікно
+    std = np.std(data)
+    if std == 0:
+        bandwidth = 1.0
+    elif bandwidth is None:
+        bandwidth = 1.06 * std * n ** (-0.2)
+    # Векторизоване обчислення
+    x_grid = np.asarray(x_grid)
+    u = (x_grid[:, None] - data[None, :]) / bandwidth
+    kernel = np.exp(-0.5 * u * u)
+    density = kernel.sum(axis=1) / (n * bandwidth * np.sqrt(2 * np.pi))
     return density
 
 
