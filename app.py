@@ -145,11 +145,10 @@ def load_data():
 
                 row = values[r]
                 for day_idx in range(days):
-                    # Дані починаються з колонки E (індекс 4)
-                    # E = FALSE (непарна колонка), F = TRUE (парна)
-                    # day_idx=0 -> E (FALSE), day_idx=1 -> F (TRUE), ...
-                    col = 4 + day_idx
-                    is_true_col = (day_idx % 2 == 1)  # TRUE для непарних індексів
+                    # Дані починаються з колонки D (індекс 3)
+                    # D – TRUE, E – FALSE, F – TRUE, G – FALSE, ...
+                    col = 3 + day_idx
+                    is_true_col = (day_idx % 2 == 0)  # TRUE для парних індексів (D, F, H...)
                     value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
@@ -766,9 +765,7 @@ with tab1:
             st.write("**Операції:**", ", ".join(selected_operations))
         st.write("---")
         st.write("**Перші 5 рядків відфільтрованих даних (date, operation, sum_true, sum_false):**")
-        # Виводимо перші 5 рядків для перевірки
         sample = filtered[["date", "operation", "sum_true", "sum_false"]].head(5)
-        # Перетворюємо дати у рядки для кращого відображення
         sample["date"] = sample["date"].dt.strftime("%d.%m.%Y")
         st.dataframe(sample, use_container_width=True, hide_index=True)
 
