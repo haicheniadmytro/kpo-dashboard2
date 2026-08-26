@@ -1186,13 +1186,15 @@ with tab4:
 
             colors = {"Всі дні": "blue", "Будні": "green", "Вихідні": "orange"}
 
-            # Для кожної групи будуємо криву щільності (без заливки)
+            # Для кожної групи будуємо криву щільності
+            max_density = 0
             for group_name, data in zip(group_names, dev_data):
                 if len(data) > 1:
                     x_min = data.min() - 10
                     x_max = data.max() + 10
                     x_grid = np.linspace(x_min, x_max, 200)
                     density = gaussian_kde_np(data, x_grid)
+                    max_density = max(max_density, max(density))
                     fig_density.add_trace(go.Scatter(
                         x=x_grid,
                         y=density,
@@ -1202,19 +1204,35 @@ with tab4:
                         fill='none',
                     ))
 
-            # Додаємо вертикальну лінію для середнього (0%)
-            fig_density.add_vline(x=0, line_dash="dash", line_color="red", annotation_text="0% (середнє)")
+            # Якщо є дані, додаємо лінії середнього та медіани в легенду
+            if max_density > 0:
+                # Лінія середнього (0%)
+                fig_density.add_trace(go.Scatter(
+                    x=[0, 0],
+                    y=[0, max_density * 1.1],
+                    mode='lines',
+                    name='Середнє (0%)',
+                    line=dict(color='red', width=2, dash='dash'),
+                    showlegend=True
+                ))
 
-            # Обчислюємо медіани для кожної групи (відхилення)
-            median_all = np.median(dev_all) if len(dev_all) > 0 else None
-            median_wd = np.median(dev_wd) if len(dev_wd) > 0 else None
-            median_we = np.median(dev_we) if len(dev_we) > 0 else None
+                # Обчислюємо медіани для кожної групи (відхилення)
+                median_all = np.median(dev_all) if len(dev_all) > 0 else None
+                median_wd = np.median(dev_wd) if len(dev_wd) > 0 else None
+                median_we = np.median(dev_we) if len(dev_we) > 0 else None
 
-            # Додаємо лінію для медіани всіх днів (чорним пунктиром)
-            if median_all is not None:
-                fig_density.add_vline(x=median_all, line_dash="dash", line_color="black", annotation_text=f"Медіана ({median_all:.1f}%)")
+                # Додаємо лінію медіани всіх днів
+                if median_all is not None:
+                    fig_density.add_trace(go.Scatter(
+                        x=[median_all, median_all],
+                        y=[0, max_density * 1.1],
+                        mode='lines',
+                        name=f'Медіана ({median_all:.1f}%)',
+                        line=dict(color='black', width=2, dash='dash'),
+                        showlegend=True
+                    ))
 
-            # Легенда зліва зверху, щоб не заважати
+            # Легенда праворуч (стандартне місце)
             fig_density.update_layout(
                 title="Криві щільності відхилень від середнього",
                 xaxis_title="Відхилення, %",
@@ -1222,9 +1240,11 @@ with tab4:
                 height=400,
                 margin=dict(l=10, r=10, t=40, b=10),
                 legend=dict(
-                    title="Група",
-                    x=0.02,
+                    title="Група / лінії",
+                    x=0.98,
                     y=0.98,
+                    xanchor='right',
+                    yanchor='top',
                     bgcolor='rgba(255,255,255,0.8)',
                     bordercolor='rgba(0,0,0,0.2)',
                     borderwidth=1
