@@ -1192,21 +1192,17 @@ with tab4:
             # Для кожної групи будуємо криву щільності (без scipy)
             for group_name, data in zip(group_names, dev_data):
                 if len(data) > 1:
-                    # Створюємо сітку x
                     x_min = data.min() - 10
                     x_max = data.max() + 10
                     x_grid = np.linspace(x_min, x_max, 200)
-                    # Обчислюємо густину за допомогою власної функції
                     density = gaussian_kde_np(data, x_grid)
-                    # Додаємо на графік
                     fig_density.add_trace(go.Scatter(
                         x=x_grid,
                         y=density,
                         mode='lines',
                         name=group_name,
                         line=dict(color=colors.get(group_name, "gray"), width=2),
-                        fill='tozeroy',
-                        fillcolor=colors.get(group_name, "gray") + '33',  # напівпрозорий
+                        fill='tozeroy',  # напівпрозора заливка кольором лінії
                     ))
 
             # Додаємо вертикальну лінію на 0%
