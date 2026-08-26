@@ -91,7 +91,6 @@ def load_data():
     spreadsheet = client.open_by_key(SPREADSHEET_ID)
 
     records = []
-    # Словник для зберігання сум TRUE/FALSE з рядка "Тотал" для кожного місяця
     total_true_false = {}
 
     for sheet_name in SHEETS:
@@ -110,21 +109,19 @@ def load_data():
                 month_rows.append((idx, parsed[0], parsed[1]))
 
         for month_idx, (header_row, month, year) in enumerate(month_rows):
-            # --- Зчитуємо рядок "Тотал" (колонки B і C) ---
-            # Рядок "Тотал" зазвичай знаходиться через 1-2 рядки після заголовка місяця
+            # Зчитуємо рядок "Тотал" (колонки B і C)
             total_row_idx = None
             for r in range(header_row + 1, min(header_row + 10, len(values))):
                 if len(values[r]) > 2 and values[r][0] == "Тотал":
                     total_row_idx = r
                     break
             if total_row_idx is not None:
-                # Колонка B = індекс 1, колонка C = індекс 2
                 sum_true = as_number(values[total_row_idx][1]) if len(values[total_row_idx]) > 1 else 0
                 sum_false = as_number(values[total_row_idx][2]) if len(values[total_row_idx]) > 2 else 0
                 month_key = f"{year}-{month:02d}"
                 total_true_false[month_key] = {"sum_true": sum_true, "sum_false": sum_false}
 
-            # --- Зчитуємо деталізовані дані ---
+            # Зчитуємо деталізовані дані
             detail_start = None
             for r in range(header_row + 1, min(header_row + 30, len(values))):
                 if len(values[r]) > 3 and values[r][3] in OPERATIONS:
@@ -208,19 +205,15 @@ def load_data():
     df["sum_false"] = df["sum_false"].fillna(0)
 
     # Додаємо загальні суми TRUE/FALSE для рядка "Тотал" (з total_true_false)
-    # Для цього створимо окремий DataFrame з цими сумами і приєднаємо до df для рядків з operation == "Тотал"
     total_tf_df = pd.DataFrame([
         {"month": month, "sum_true": data["sum_true"], "sum_false": data["sum_false"]}
         for month, data in total_true_false.items()
     ])
     if not total_tf_df.empty:
-        # Додаємо колонку з місяцем для об'єднання
         df = df.merge(total_tf_df, on="month", how="left", suffixes=("", "_total"))
-        # Для рядків з operation == "Тотал" замінюємо sum_true і sum_false на значення з total
         mask = df["operation"] == "Тотал"
         df.loc[mask, "sum_true"] = df.loc[mask, "sum_true_total"]
         df.loc[mask, "sum_false"] = df.loc[mask, "sum_false_total"]
-        # Видаляємо тимчасові колонки
         df = df.drop(columns=["sum_true_total", "sum_false_total"])
 
     return df
@@ -532,7 +525,7 @@ busiest_weekday, busiest_weekday_val = calc_busiest_weekday(filtered)
 busiest_op, busiest_op_val = calc_busiest_operation(filtered)
 std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
-# --- Розрахунок % погоджень (виправлено) ---
+# --- Розрахунок % погоджень ---
 if operation_mode == "Тотал":
     # Для "Тотал" беремо суми з рядка "Тотал" (вони вже є в df)
     sum_true_total = filtered["sum_true"].sum()
@@ -759,6 +752,18 @@ with tab1:
                 )
         else:
             st.markdown(custom_metric("Порівняння", "—", "Доступно лише для одного місяця в режимі 'Тотал'"), unsafe_allow_html=True)
+
+    # --- ДІАГНОСТИКА КОЕФІЦІЄНТА ПОГОДЖЕНЬ ---
+    with st.expander("🔍 Деталі розрахунку коефіцієнта погоджень"):
+        st.write(f"**Сума TRUE:** {sum_true_total:.0f}")
+        st.write(f"**Сума FALSE:** {sum_false_total:.0f}")
+        st.write(f"**Загальна сума (TRUE+FALSE):** {total_ratio:.0f}")
+        st.write(f"**Коефіцієнт:** {approval_rate:.1f}%")
+        if operation_mode == "Вибрані операції":
+            st.write("**Операції:**", ", ".join(selected_operations))
+        st.write("---")
+        st.write("**Перші 5 рядків відфільтрованих даних (date, operation, sum_true, sum_false):**")
+        st.dataframe(filtered[["date", "operation", "sum_true", "sum_false"]].head(5), use_container_width=True, hide_index=True)
 
     st.divider()
 
