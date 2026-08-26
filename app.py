@@ -8,7 +8,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from google.oauth2.service_account import Credentials
-from scipy.stats import gaussian_kde
 import numpy as np
 
 
@@ -239,6 +238,30 @@ def detect_anomalies(df, window=14, threshold=1.5):
     daily["is_anomaly"] = abs(daily["z_score"]) > threshold
     daily = daily[(daily["value"] > 0)]
     return daily
+
+
+def gaussian_kde_np(data, x_grid, bandwidth=None):
+    """
+    Обчислення оцінки густини за допомогою гауссового ядра.
+    data — одновимірний масив значень.
+    x_grid — координати, де обчислюється густина.
+    bandwidth — ширина вікна (якщо None, використовується правило Сільвермана).
+    """
+    data = np.asarray(data)
+    n = len(data)
+    if n == 0:
+        return np.zeros_like(x_grid)
+    if bandwidth is None:
+        # Правило Сільвермана
+        bandwidth = 1.06 * np.std(data) * n ** (-0.2)
+        if bandwidth == 0:
+            bandwidth = 1.0  # якщо всі значення однакові
+    density = np.zeros_like(x_grid)
+    for i, xi in enumerate(x_grid):
+        u = (xi - data) / bandwidth
+        density[i] = np.sum(np.exp(-0.5 * u * u))
+    density /= n * bandwidth * np.sqrt(2 * np.pi)
+    return density
 
 
 def forecast_scenarios(df, current_month):
@@ -1108,13 +1131,12 @@ with tab4:
     col2.markdown(custom_metric("Стандартне відхилення", f"{std:.1f}" if std > 0 else "—", "Стандартне відхилення денних сум (лише фактичні дні)"), unsafe_allow_html=True)
     col3.markdown(custom_metric("Коефіцієнт варіації (CV)", f"{cv:.1f}%" if cv > 0 else "—", "CV = (стандартне відхилення / середнє) × 100%"), unsafe_allow_html=True)
 
-    # --- НОВИЙ ГРАФІК: Крива щільності відхилень ---
+    # --- НОВИЙ ГРАФІК: Крива щільності відхилень (без scipy) ---
     st.subheader("📊 Розподіл відхилень від середнього (крива щільності)")
 
     # Підготовка даних
     daily_totals = filtered.groupby("date")["value"].sum().reset_index()
     daily_totals["is_weekend"] = daily_totals["date"].dt.dayofweek >= 5
-    daily_totals["weekday"] = daily_totals["date"].dt.day_name()
 
     if daily_totals.empty or len(daily_totals) < 3:
         st.info("Недостатньо даних для побудови графіка розподілу.")
@@ -1167,16 +1189,19 @@ with tab4:
 
             colors = {"Всі дні": "blue", "Будні": "green", "Вихідні": "orange"}
 
-            # Для кожної групи будуємо криву щільності
+            # Для кожної групи будуємо криву щільності (без scipy)
             for group_name, data in zip(group_names, dev_data):
-                # Обчислюємо криву щільності за допомогою gaussian_kde
                 if len(data) > 1:
-                    kde = gaussian_kde(data)
-                    x_range = np.linspace(data.min() - 10, data.max() + 10, 200)
-                    y_density = kde(x_range)
+                    # Створюємо сітку x
+                    x_min = data.min() - 10
+                    x_max = data.max() + 10
+                    x_grid = np.linspace(x_min, x_max, 200)
+                    # Обчислюємо густину за допомогою власної функції
+                    density = gaussian_kde_np(data, x_grid)
+                    # Додаємо на графік
                     fig_density.add_trace(go.Scatter(
-                        x=x_range,
-                        y=y_density,
+                        x=x_grid,
+                        y=density,
                         mode='lines',
                         name=group_name,
                         line=dict(color=colors.get(group_name, "gray"), width=2),
