@@ -589,23 +589,6 @@ st.markdown("""
         margin: 0 !important;
         color: inherit !important;
     }
-    .forecast-label {
-        font-size: 0.75rem !important;
-        font-weight: 500;
-        color: inherit !important;
-        margin-bottom: 0.05rem;
-    }
-    .forecast-value {
-        font-size: 1.1rem !important;
-        font-weight: 600;
-        color: inherit !important;
-    }
-    .forecast-detail {
-        font-size: 0.7rem !important;
-        color: inherit !important;
-        opacity: 0.8;
-        margin: 0.1rem 0;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -630,7 +613,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Динаміка", "�
 # TAB 1: OVERVIEW
 # ============================================================
 with tab1:
-    # Рядок 1 (6 колонок)
+    # Рядок 1
     col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
@@ -651,8 +634,8 @@ with tab1:
     with col6:
         st.markdown(custom_metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—", "Коефіцієнт варіації (лише фактичні дні)"), unsafe_allow_html=True)
 
-    # Рядок 2 (5 колонок)
-    col7, col8, col9, col10, col11 = st.columns(5)
+    # --- Рядок 2: 6 колонок (щоб було симетрично з першим рядом) ---
+    col7, col8, col9, col10, col11, col12 = st.columns(6)
 
     with col7:
         if busiest_weekday:
