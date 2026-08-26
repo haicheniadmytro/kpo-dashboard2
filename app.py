@@ -3,12 +3,12 @@ from datetime import datetime
 from pathlib import Path
 
 import gspread
-import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from google.oauth2.service_account import Credentials
+import numpy as np
 
 
 st.set_page_config(
@@ -174,25 +174,6 @@ def load_data():
     return df
 
 
-def gaussian_kde_np(data, x_grid, bw=None):
-    if len(data) < 2:
-        return np.zeros_like(x_grid)
-
-    std = np.std(data, ddof=1)
-    if std == 0:
-        std = 1e-5
-
-    if bw is None:
-        bw = 1.06 * std * (len(data) ** (-0.2))
-
-    if bw == 0:
-        bw = 1e-5
-
-    diff = x_grid[:, None] - data[None, :]
-    kernel = np.exp(-0.5 * (diff / bw) ** 2) / (bw * np.sqrt(2 * np.pi))
-    return kernel.mean(axis=1)
-
-
 # --- Функції для розрахунку додаткових метрик ---
 
 def calc_peak_min_avg(df):
@@ -259,7 +240,33 @@ def detect_anomalies(df, window=14, threshold=1.5):
     return daily
 
 
+def gaussian_kde_np(data, x_grid, bandwidth=None):
+    """
+    Обчислення оцінки густини за допомогою гауссового ядра (векторизована версія).
+    """
+    data = np.asarray(data, dtype=float)
+    data = data[np.isfinite(data)]
+    n = len(data)
+    if n == 0:
+        return np.zeros_like(x_grid)
+    std = np.std(data)
+    if std == 0:
+        bandwidth = 1.0
+    elif bandwidth is None:
+        bandwidth = 1.06 * std * n ** (-0.2)
+    x_grid = np.asarray(x_grid)
+    u = (x_grid[:, None] - data[None, :]) / bandwidth
+    kernel = np.exp(-0.5 * u * u)
+    density = kernel.sum(axis=1) / (n * bandwidth * np.sqrt(2 * np.pi))
+    return density
+
+
 def forecast_scenarios(df, current_month):
+    """
+    Повертає два прогнози для поточного місяця:
+    1. Статистичний (середнє ± 0.5×std)
+    2. Сезонний (на основі динаміки минулого року)
+    """
     if df.empty or current_month not in df["month"].values:
         return None, None
 
@@ -282,7 +289,7 @@ def forecast_scenarios(df, current_month):
     total_days = pd.Period(current_month).days_in_month
     remaining_days = total_days - days_passed
 
-    # 1. СТАТИСТИЧНИЙ ПРОГНОЗ
+    # --- 1. СТАТИСТИЧНИЙ ПРОГНОЗ ---
     stat_base = fact_sum + avg_daily * remaining_days
     stat_min = fact_sum + max(0, avg_daily - 0.5 * std_daily) * remaining_days
     stat_max = fact_sum + (avg_daily + 0.5 * std_daily) * remaining_days
@@ -299,7 +306,7 @@ def forecast_scenarios(df, current_month):
         "remaining_days": remaining_days,
     }
 
-    # 2. СЕЗОННИЙ ПРОГНОЗ
+    # --- 2. СЕЗОННИЙ ПРОГНОЗ (на основі минулого року) ---
     current_period = pd.Period(current_month)
     prev_period = current_period - 12
     prev_period_str = str(prev_period)
@@ -464,6 +471,7 @@ daily_total = filtered.groupby("date")["value"].sum()
 total_value = daily_total.sum()
 daily_avg = total_value / num_days if num_days > 0 else 0
 
+# Середнє за будні та вихідні (тільки на основі фактичних днів)
 weekday_mask = filtered["is_weekend"] == False
 weekend_mask = filtered["is_weekend"] == True
 
@@ -552,6 +560,7 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
 
+# --- Допоміжна функція для кастомних метрик ---
 def custom_metric(label, value, help_text=None):
     help_icon = f'<span class="help-icon" title="{help_text}">?</span>' if help_text else ""
     return f"""
@@ -562,6 +571,7 @@ def custom_metric(label, value, help_text=None):
     """
 
 
+# --- CSS для кастомних метрик ---
 st.markdown("""
 <style>
     .metric-container {
@@ -606,6 +616,7 @@ st.markdown("""
 
 
 def forecast_cards(title, forecast, help_base=None, help_min=None, help_max=None):
+    """Відображає три картки прогнозу в одному рядку."""
     if forecast is None:
         return
     col1, col2, col3 = st.columns(3)
@@ -624,6 +635,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Динаміка", "�
 # TAB 1: OVERVIEW
 # ============================================================
 with tab1:
+    # --- Рядок 1: 6 колонок ---
     col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
@@ -646,6 +658,7 @@ with tab1:
     with col6:
         st.markdown(custom_metric("Мінімум за день", f"{min_val:,.0f}", "Найменша кількість операцій за один день (лише фактичні дні)"), unsafe_allow_html=True)
 
+    # --- Рядок 2: 5 колонок ---
     col7, col8, col9, col10, col11 = st.columns(5)
 
     with col7:
@@ -698,6 +711,7 @@ with tab1:
 
     st.divider()
 
+    # --- БЛОК ПРОГНОЗІВ ---
     if stat_forecast or season_forecast:
         st.subheader("📊 Прогнози на поточний місяць")
 
@@ -714,6 +728,7 @@ with tab1:
         if season_forecast:
             st.markdown("**📅 Сезонний прогноз** (на основі динаміки аналогічного періоду минулого року)")
 
+            # Детальна інформація для перевірки
             with st.expander("🔍 Деталі розрахунку сезонного прогнозу"):
                 st.write(f"**Період минулого року:** {season_forecast['prev_period']}")
                 st.write(f"**Днів минуло:** {season_forecast['days_passed']}")
@@ -734,6 +749,7 @@ with tab1:
 
     st.divider()
 
+    # --- Загальна динаміка (тільки фактичні дані) ---
     st.subheader("📈 Динаміка за період")
 
     if operation_mode == "Тотал":
@@ -842,6 +858,7 @@ with tab2:
     )
     st.plotly_chart(fig_daily_detailed, use_container_width=True)
 
+    # YoY
     if operation_mode == "Тотал":
         st.subheader("📊 Порівняння по роках (YoY)")
         yoy_data = df[df["operation"] == "Тотал"].copy()
@@ -875,6 +892,7 @@ with tab2:
                 compare_df["%"] = compare_df["%"].apply(lambda x: f"{x:+.1f}%")
                 st.dataframe(compare_df, use_container_width=True)
 
+    # Накопичувальна сума
     st.subheader("📈 Накопичувальна сума за період")
     cumsum = filtered.groupby("date")["value"].sum().sort_index().cumsum().reset_index()
     cumsum.columns = ["date", "cumulative"]
@@ -889,6 +907,7 @@ with tab2:
     fig_cum.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_cum, use_container_width=True)
 
+    # Аномальні дні
     st.subheader("🔍 Аномальні дні")
     anomalies = detect_anomalies(filtered, window=14, threshold=1.5)
     if not anomalies.empty:
@@ -1085,13 +1104,11 @@ with tab4:
     heat_pivot = heat_data.pivot(index="month_label", columns="weekday_ua", values="value").fillna(0)
     order = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
     heat_pivot = heat_pivot.reindex(columns=order)
-    
     def sort_months(month_str):
         try:
             return datetime.strptime(month_str, "%m.%Y")
-        except Exception:
+        except:
             return datetime(1900, 1, 1)
-
     sorted_months = sorted(heat_pivot.index, key=sort_months)
     heat_pivot = heat_pivot.reindex(sorted_months)
 
@@ -1111,84 +1128,123 @@ with tab4:
     col2.markdown(custom_metric("Стандартне відхилення", f"{std:.1f}" if std > 0 else "—", "Стандартне відхилення денних сум (лише фактичні дні)"), unsafe_allow_html=True)
     col3.markdown(custom_metric("Коефіцієнт варіації (CV)", f"{cv:.1f}%" if cv > 0 else "—", "CV = (стандартне відхилення / середнє) × 100%"), unsafe_allow_html=True)
 
-    # --- ГРАФІК ВІДХИЛЕНЬ ВІД СЕРЕДНЬОГО (ПОЧАТКОВИЙ ВАРІАНТ) ---
-    st.subheader("📊 Відхилення від середнього навантаження")
+    # --- НОВИЙ ГРАФІК: Крива щільності відхилень (без заливки) ---
+    st.subheader("📊 Розподіл відхилень від середнього (крива щільності)")
 
+    # Підготовка даних
     daily_totals = filtered.groupby("date")["value"].sum().reset_index()
     daily_totals["is_weekend"] = daily_totals["date"].dt.dayofweek >= 5
 
     if daily_totals.empty or len(daily_totals) < 3:
-        st.info("Недостатньо даних для побудови графіку розподілу.")
+        st.info("Недостатньо даних для побудови графіка розподілу.")
     else:
-        daily_totals["group"] = daily_totals["is_weekend"].map({False: "Будні", True: "Вихідні"})
+        # Загальне середнє
+        mean_all = daily_totals["value"].mean()
+        daily_totals["dev_all"] = (daily_totals["value"] - mean_all) / mean_all * 100
 
-        all_vals = daily_totals["value"].values
-        mean_all = np.mean(all_vals)
-        dev_all = all_vals - mean_all
+        # Середнє для буднів і вихідних
+        weekday_mask = daily_totals["is_weekend"] == False
+        weekend_mask = daily_totals["is_weekend"] == True
 
-        wd_vals = daily_totals[daily_totals["group"] == "Будні"]["value"].values
-        mean_wd = np.mean(wd_vals) if len(wd_vals) > 0 else 0
-        dev_wd = wd_vals - mean_wd if len(wd_vals) > 0 else np.array([])
+        mean_weekday = daily_totals.loc[weekday_mask, "value"].mean() if weekday_mask.any() else None
+        mean_weekend = daily_totals.loc[weekend_mask, "value"].mean() if weekend_mask.any() else None
 
-        we_vals = daily_totals[daily_totals["group"] == "Вихідні"]["value"].values
-        mean_we = np.mean(we_vals) if len(we_vals) > 0 else 0
-        dev_we = we_vals - mean_we if len(we_vals) > 0 else np.array([])
+        daily_totals["dev_weekday"] = None
+        daily_totals.loc[weekday_mask, "dev_weekday"] = (
+            (daily_totals.loc[weekday_mask, "value"] - mean_weekday) / mean_weekday * 100
+        ) if mean_weekday is not None and mean_weekday != 0 else None
 
-        min_dev = np.min(dev_all)
-        max_dev = np.max(dev_all)
-        margin = (max_dev - min_dev) * 0.2 if max_dev != min_dev else 10
-        x_grid = np.linspace(min_dev - margin, max_dev + margin, 200)
+        daily_totals["dev_weekend"] = None
+        daily_totals.loc[weekend_mask, "dev_weekend"] = (
+            (daily_totals.loc[weekend_mask, "value"] - mean_weekend) / mean_weekend * 100
+        ) if mean_weekend is not None and mean_weekend != 0 else None
 
-        fig_dist = go.Figure()
+        # Збираємо дані для трьох груп
+        dev_data = []
+        group_names = []
+        # Всі дні
+        dev_all = daily_totals["dev_all"].dropna().values
+        if len(dev_all) > 1:
+            dev_data.append(dev_all)
+            group_names.append("Всі дні")
+        # Будні
+        dev_wd = daily_totals.loc[weekday_mask, "dev_weekday"].dropna().values if weekday_mask.any() else np.array([])
+        if len(dev_wd) > 1:
+            dev_data.append(dev_wd)
+            group_names.append("Будні")
+        # Вихідні
+        dev_we = daily_totals.loc[weekend_mask, "dev_weekend"].dropna().values if weekend_mask.any() else np.array([])
+        if len(dev_we) > 1:
+            dev_data.append(dev_we)
+            group_names.append("Вихідні")
 
-        kde_all = gaussian_kde_np(dev_all, x_grid)
-        fig_dist.add_trace(go.Scatter(
-            x=x_grid,
-            y=kde_all,
-            mode="lines",
-            name=f"Всі дні (середнє = {mean_all:.1f})",
-            line=dict(color="blue", width=2)
-        ))
+        if not dev_data:
+            st.info("Недостатньо даних для побудови кривих щільності.")
+        else:
+            # Створюємо графік
+            fig_density = go.Figure()
 
-        if len(dev_wd) >= 2:
-            kde_wd = gaussian_kde_np(dev_wd, x_grid)
-            fig_dist.add_trace(go.Scatter(
-                x=x_grid,
-                y=kde_wd,
-                mode="lines",
-                name=f"Будні (середнє = {mean_wd:.1f})",
-                line=dict(color="green", width=2)
-            ))
+            colors = {"Всі дні": "blue", "Будні": "green", "Вихідні": "orange"}
 
-        if len(dev_we) >= 2:
-            kde_we = gaussian_kde_np(dev_we, x_grid)
-            fig_dist.add_trace(go.Scatter(
-                x=x_grid,
-                y=kde_we,
-                mode="lines",
-                name=f"Вихідні (середнє = {mean_we:.1f})",
-                line=dict(color="orange", width=2)
-            ))
+            # Для кожної групи будуємо криву щільності (без заливки)
+            for group_name, data in zip(group_names, dev_data):
+                if len(data) > 1:
+                    x_min = data.min() - 10
+                    x_max = data.max() + 10
+                    x_grid = np.linspace(x_min, x_max, 200)
+                    density = gaussian_kde_np(data, x_grid)
+                    fig_density.add_trace(go.Scatter(
+                        x=x_grid,
+                        y=density,
+                        mode='lines',
+                        name=group_name,
+                        line=dict(color=colors.get(group_name, "gray"), width=2.5),
+                        fill='none',  # без заливки
+                    ))
 
-        fig_dist.add_vline(x=0, line_dash="dash", line_color="red", annotation_text="Середнє (0)", annotation_position="top right")
+            # Додаємо вертикальну лінію на 0%
+            fig_density.add_vline(x=0, line_dash="dash", line_color="red", annotation_text="0% (середнє)")
 
-        fig_dist.update_layout(
-            title="Розподіл відхилень від середнього значення (KDE)",
-            xaxis_title="Відхилення від середнього (абсолютна кількість)",
-            yaxis_title="Щільність ймовірності",
-            height=400,
-            margin=dict(l=10, r=10, t=40, b=10),
-            hovermode="x"
-        )
+            fig_density.update_layout(
+                title="Криві щільності відхилень від середнього",
+                xaxis_title="Відхилення, %",
+                yaxis_title="Щільність",
+                height=400,
+                margin=dict(l=10, r=10, t=40, b=10),
+                legend=dict(title="Група"),
+                hovermode="x unified"
+            )
 
-        st.plotly_chart(fig_dist, use_container_width=True)
+            st.plotly_chart(fig_density, use_container_width=True)
 
-        with st.expander("❓ Як читати цей графік?"):
-            st.markdown("""
-            - **Центр графіку (0):** Це точка відповідності відповідному середньому значенням груп.
-            - **Ширина кривої:** Показує варіативність. Ширша крива = більший розкид навантаження, вужча = стабільніша робота.
-            - **Форма розподiлу:** Зміщення піка вліво або вправо від 0 показує, як часто навантаження відхиляється від середнього рівня.
-            """)
+            # --- Додаємо пояснення ---
+            with st.expander("❓ Що означає форма кривих?"):
+                st.markdown("""
+                **Крива щільності** показує, як часто зустрічаються дні з різним відхиленням від середнього.
+
+                - **Пік кривої** – найчастіше значення відхилення (мода). Якщо пік зміщений вліво/вправо – це означає, що більшість днів мають відхилення не нульове.
+                - **Ширина кривої** – розкид даних. Чим ширша крива, тим більша варіативність.
+                - **Асиметрія** – якщо права частина довша за ліву, то є більше днів з високим відхиленням (пікові навантаження).
+                - **Викиди** – окремі «хвости» можуть вказувати на аномальні дні.
+                """)
+
+            with st.expander("❓ Як це інтерпретувати для бізнесу?"):
+                st.markdown("""
+                - **Стабільність** – якщо крива вузька і симетрична, процес стабільний і передбачуваний.
+                - **Ризик перевантаження** – якщо є довгий правий хвіст, це означає, що іноді виникають дні з набагато вищим навантаженням (потрібно мати резерв потужності).
+                - **Ефективність** – якщо крива зміщена вліво (більшість днів нижче середнього), це може вказувати на неефективне використання ресурсів у звичайні дні.
+                - **Порівняння груп** – якщо криві буднів і вихідних суттєво відрізняються, це означає, що навантаження залежить від дня тижня, і планування має це враховувати.
+                """)
+
+            # Показуємо статистику під графіком
+            stats = []
+            stats.append(f"**Всі дні:** середнє = {mean_all:.1f}, медіана = {daily_totals['value'].median():.1f}, CV = {cv:.1f}%")
+            if mean_weekday is not None:
+                stats.append(f"**Будні:** середнє = {mean_weekday:.1f}, медіана = {daily_totals.loc[weekday_mask, 'value'].median():.1f}")
+            if mean_weekend is not None:
+                stats.append(f"**Вихідні:** середнє = {mean_weekend:.1f}, медіана = {daily_totals.loc[weekend_mask, 'value'].median():.1f}")
+
+            st.markdown(" ".join(stats), unsafe_allow_html=True)
 
     st.subheader("📈 Співвідношення пік / середнє")
     st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—", "У скільки разів максимальне денне значення перевищує середнє"), unsafe_allow_html=True)
