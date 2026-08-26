@@ -1232,7 +1232,7 @@ with tab4:
                         showlegend=True
                     ))
 
-            # Легенда праворуч (стандартне місце)
+            # Легенда праворуч без білого фону
             fig_density.update_layout(
                 title="Криві щільності відхилень від середнього",
                 xaxis_title="Відхилення, %",
@@ -1245,9 +1245,7 @@ with tab4:
                     y=0.98,
                     xanchor='right',
                     yanchor='top',
-                    bgcolor='rgba(255,255,255,0.8)',
-                    bordercolor='rgba(0,0,0,0.2)',
-                    borderwidth=1
+                    bgcolor='rgba(0,0,0,0)',  # повністю прозорий фон
                 ),
                 hovermode="x unified"
             )
