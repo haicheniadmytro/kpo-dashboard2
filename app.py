@@ -286,7 +286,6 @@ def forecast_scenarios(df, current_month):
 
     # --- 2. СЕЗОННИЙ ПРОГНОЗ (на основі минулого року) ---
     current_period = pd.Period(current_month)
-    # Отримуємо аналогічний місяць минулого року (на 12 місяців назад)
     prev_period = current_period - 12
     prev_period_str = str(prev_period)
 
@@ -450,6 +449,20 @@ daily_total = filtered.groupby("date")["value"].sum()
 total_value = daily_total.sum()
 daily_avg = total_value / num_days if num_days > 0 else 0
 
+# Середнє за будні та вихідні (тільки на основі фактичних днів)
+weekday_mask = filtered["is_weekend"] == False
+weekend_mask = filtered["is_weekend"] == True
+
+if weekday_mask.any():
+    daily_avg_weekday = filtered[weekday_mask].groupby("date")["value"].sum().mean()
+else:
+    daily_avg_weekday = None
+
+if weekend_mask.any():
+    daily_avg_weekend = filtered[weekend_mask].groupby("date")["value"].sum().mean()
+else:
+    daily_avg_weekend = None
+
 peak = daily_total.max() if not daily_total.empty else 0
 min_val = daily_total.min() if not daily_total.empty else 0
 peak_avg_ratio = peak / daily_avg if daily_avg > 0 else 0
@@ -469,7 +482,7 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
     current_period = pd.Period(selected_months[0])
     today_comp = pd.Timestamp.now().normalize()
 
-    prev_period = current_period - 1  # попередній місяць (для порівняння «до попереднього місяця»)
+    prev_period = current_period - 1
     if current_period.end_time <= today_comp:
         cur_sum = daily_total.sum()
         prev_sum = df[
@@ -492,7 +505,6 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
     if delta_prev is not None:
         comparison_parts.append(f"Попер. міс: {delta_prev:+.1f}%")
 
-    # Порівняння з аналогічним місяцем минулого року (для відображення в «Порівняння»)
     year_prev = current_period.year - 1
     month_num = current_period.month
     prev_year_period = pd.Period(year=year_prev, month=month_num, freq="M")
@@ -618,7 +630,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Динаміка", "�
 # TAB 1: OVERVIEW
 # ============================================================
 with tab1:
-    # Рядок 1
+    # Рядок 1 (6 колонок)
     col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
@@ -639,8 +651,8 @@ with tab1:
     with col6:
         st.markdown(custom_metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—", "Коефіцієнт варіації (лише фактичні дні)"), unsafe_allow_html=True)
 
-    # Рядок 2
-    col7, col8, col9 = st.columns(3)
+    # Рядок 2 (5 колонок)
+    col7, col8, col9, col10, col11 = st.columns(5)
 
     with col7:
         if busiest_weekday:
@@ -667,6 +679,14 @@ with tab1:
         st.markdown(custom_metric("Найактивніша операція", val, help_txt), unsafe_allow_html=True)
 
     with col9:
+        avg_weekday_str = f"{daily_avg_weekday:.0f}" if daily_avg_weekday is not None and not pd.isna(daily_avg_weekday) else "—"
+        st.markdown(custom_metric("Середнє за будні", avg_weekday_str, "Середня кількість операцій у будні (лише фактичні дні)"), unsafe_allow_html=True)
+
+    with col10:
+        avg_weekend_str = f"{daily_avg_weekend:.0f}" if daily_avg_weekend is not None and not pd.isna(daily_avg_weekend) else "—"
+        st.markdown(custom_metric("Середнє за вихідні", avg_weekend_str, "Середня кількість операцій у вихідні (лише фактичні дні)"), unsafe_allow_html=True)
+
+    with col11:
         if len(selected_months) == 1 and operation_mode == "Тотал":
             st.markdown("**Порівняння**")
             if comparison_text != "—":
