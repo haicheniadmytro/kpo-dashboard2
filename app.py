@@ -1106,6 +1106,99 @@ with tab4:
     col2.markdown(custom_metric("Стандартне відхилення", f"{std:.1f}" if std > 0 else "—", "Стандартне відхилення денних сум (лише фактичні дні)"), unsafe_allow_html=True)
     col3.markdown(custom_metric("Коефіцієнт варіації (CV)", f"{cv:.1f}%" if cv > 0 else "—", "CV = (стандартне відхилення / середнє) × 100%"), unsafe_allow_html=True)
 
+    # --- НОВИЙ ГРАФІК: Розподіл відхилень від середнього ---
+    st.subheader("📊 Розподіл відхилень від середнього")
+
+    # Підготовка даних
+    daily_totals = filtered.groupby("date")["value"].sum().reset_index()
+    daily_totals["is_weekend"] = daily_totals["date"].dt.dayofweek >= 5
+    daily_totals["weekday"] = daily_totals["date"].dt.day_name()
+
+    if daily_totals.empty:
+        st.info("Недостатньо даних для побудови графіка розподілу.")
+    else:
+        # Загальне середнє
+        mean_all = daily_totals["value"].mean()
+        daily_totals["dev_all"] = (daily_totals["value"] - mean_all) / mean_all * 100
+
+        # Середнє для буднів і вихідних
+        weekday_mask = daily_totals["is_weekend"] == False
+        weekend_mask = daily_totals["is_weekend"] == True
+
+        mean_weekday = daily_totals.loc[weekday_mask, "value"].mean() if weekday_mask.any() else None
+        mean_weekend = daily_totals.loc[weekend_mask, "value"].mean() if weekend_mask.any() else None
+
+        daily_totals["dev_weekday"] = None
+        daily_totals.loc[weekday_mask, "dev_weekday"] = (
+            (daily_totals.loc[weekday_mask, "value"] - mean_weekday) / mean_weekday * 100
+        ) if mean_weekday is not None and mean_weekday != 0 else None
+
+        daily_totals["dev_weekend"] = None
+        daily_totals.loc[weekend_mask, "dev_weekend"] = (
+            (daily_totals.loc[weekend_mask, "value"] - mean_weekend) / mean_weekend * 100
+        ) if mean_weekend is not None and mean_weekend != 0 else None
+
+        # Збираємо дані для трьох груп
+        dev_dfs = []
+        # Всі дні
+        df_all = daily_totals[["date", "dev_all"]].copy()
+        df_all["group"] = "Всі дні"
+        df_all = df_all.rename(columns={"dev_all": "deviation"})
+        dev_dfs.append(df_all)
+
+        # Будні
+        if mean_weekday is not None:
+            df_wd = daily_totals[weekday_mask][["date", "dev_weekday"]].copy()
+            df_wd["group"] = "Будні"
+            df_wd = df_wd.rename(columns={"dev_weekday": "deviation"})
+            dev_dfs.append(df_wd)
+
+        # Вихідні
+        if mean_weekend is not None:
+            df_we = daily_totals[weekend_mask][["date", "dev_weekend"]].copy()
+            df_we["group"] = "Вихідні"
+            df_we = df_we.rename(columns={"dev_weekend": "deviation"})
+            dev_dfs.append(df_we)
+
+        dev_df = pd.concat(dev_dfs, ignore_index=True)
+        dev_df = dev_df.dropna(subset=["deviation"])
+
+        if dev_df.empty:
+            st.info("Недостатньо даних для побудови графіка розподілу.")
+        else:
+            # Створюємо графік
+            fig_dev = px.violin(
+                dev_df,
+                x="group",
+                y="deviation",
+                box=True,
+                points="all",
+                labels={"deviation": "Відхилення від середнього, %", "group": ""},
+                color="group",
+                color_discrete_sequence=px.colors.qualitative.Set2,
+                title="Розподіл відхилень від середнього"
+            )
+            # Додаємо горизонтальну лінію на 0%
+            fig_dev.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="0% (середнє)")
+
+            fig_dev.update_layout(
+                height=400,
+                margin=dict(l=10, r=10, t=20, b=10),
+                legend=dict(title="")
+            )
+
+            st.plotly_chart(fig_dev, use_container_width=True)
+
+            # Показуємо статистику під графіком
+            stats = []
+            stats.append(f"**Всі дні:** середнє = {mean_all:.1f}, медіана = {daily_totals['value'].median():.1f}, CV = {cv:.1f}%")
+            if mean_weekday is not None:
+                stats.append(f"**Будні:** середнє = {mean_weekday:.1f}, медіана = {daily_totals.loc[weekday_mask, 'value'].median():.1f}")
+            if mean_weekend is not None:
+                stats.append(f"**Вихідні:** середнє = {mean_weekend:.1f}, медіана = {daily_totals.loc[weekend_mask, 'value'].median():.1f}")
+
+            st.markdown(" ".join(stats), unsafe_allow_html=True)
+
     st.subheader("📈 Співвідношення пік / середнє")
     st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—", "У скільки разів максимальне денне значення перевищує середнє"), unsafe_allow_html=True)
 
