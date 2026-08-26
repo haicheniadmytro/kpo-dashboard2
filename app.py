@@ -244,7 +244,7 @@ def forecast_scenarios(df, current_month):
     Повертає прогнозні сценарії на основі:
     - середнього за минулі дні
     - стандартного відхилення
-    Прогноз будується як факт + середнє/песимістичне/оптимістичне на дні, що залишилися.
+    Прогноз будується як факт + середнє/консервативне/оптимістичне на дні, що залишилися.
     """
     if df.empty or current_month not in df["month"].values:
         return None
@@ -314,10 +314,18 @@ except Exception as exc:
 st.sidebar.header("Фільтри")
 
 years = sorted(df["year"].unique())
+
+# Визначаємо поточний рік для дефолтного вибору
+current_year = datetime.now().year
+if current_year in years:
+    default_years = [current_year]
+else:
+    default_years = [years[-1]] if years else []
+
 selected_years = st.sidebar.multiselect(
     "Рік",
     options=years,
-    default=years,
+    default=default_years,
 )
 
 available_months = (
