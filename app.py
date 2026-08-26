@@ -132,7 +132,7 @@ def load_data():
                 row = values[r]
                 for day_idx in range(days):
                     col = 4 + day_idx  # E = index 4
-                    is_true_col = (day_idx % 2 == 0)
+                    is_true_col = (day_idx % 2 == 0)  # парна колонка D => TRUE
                     value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
@@ -157,6 +157,7 @@ def load_data():
 
     date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend"]].drop_duplicates("date")
 
+    # Групуємо за датою та операцією
     df_grouped = (
         df_raw.groupby(["date", "operation"], as_index=False)["value"]
         .sum()
@@ -165,6 +166,7 @@ def load_data():
 
     df = df_grouped.merge(date_metadata, on="date", how="left")
 
+    # Додаємо "Тотал"
     total = (
         df.groupby("date", as_index=False)["value"]
         .sum()
@@ -173,22 +175,44 @@ def load_data():
     total = total.merge(date_metadata, on="date", how="left")
     df = pd.concat([df, total], ignore_index=True)
 
-    # TRUE/FALSE агрегація
+    # Агрегуємо TRUE/FALSE для кожної дати та операції
     true_false_agg = (
         df_raw.groupby(["date", "operation", "is_true_col"])["value"]
         .sum()
         .unstack(fill_value=0)
         .reset_index()
     )
+    # Перейменовуємо колонки: is_true_col=False -> sum_false, is_true_col=True -> sum_true
     true_false_agg.columns = ["date", "operation", "sum_false", "sum_true"]
+    # Якщо якоїсь колонки немає, додаємо
     if "sum_true" not in true_false_agg.columns:
         true_false_agg["sum_true"] = 0
     if "sum_false" not in true_false_agg.columns:
         true_false_agg["sum_false"] = 0
 
+    # Додаємо суми TRUE/FALSE до основного df
     df = df.merge(true_false_agg, on=["date", "operation"], how="left")
     df["sum_true"] = df["sum_true"].fillna(0)
     df["sum_false"] = df["sum_false"].fillna(0)
+
+    # Для "Тотал" суми TRUE/FALSE мають бути сумою по всіх операціях
+    # Але ми вже додали "Тотал" в df, і при злитті він отримає NaN, тому перерахуємо
+    # Окремо агрегуємо TRUE/FALSE по датах для всіх операцій
+    true_false_total = (
+        df_raw.groupby(["date", "is_true_col"])["value"]
+        .sum()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
+    true_false_total.columns = ["date", "sum_false_total", "sum_true_total"]
+    # Додаємо до df для рядків з operation == "Тотал"
+    for idx, row in df.iterrows():
+        if row["operation"] == "Тотал":
+            date = row["date"]
+            match = true_false_total[true_false_total["date"] == date]
+            if not match.empty:
+                df.at[idx, "sum_true"] = match.iloc[0]["sum_true_total"]
+                df.at[idx, "sum_false"] = match.iloc[0]["sum_false_total"]
 
     return df
 
@@ -1202,6 +1226,11 @@ with tab4:
                         line=dict(color=colors.get(group_name, "gray"), width=2.5),
                         fill='none',
                     ))
+
+            # Ініціалізуємо змінні, щоб уникнути NameError
+            median_all = None
+            median_wd = None
+            median_we = None
 
             if max_density > 0:
                 fig_density.add_trace(go.Scatter(
