@@ -1106,16 +1106,16 @@ with tab4:
     col2.markdown(custom_metric("Стандартне відхилення", f"{std:.1f}" if std > 0 else "—", "Стандартне відхилення денних сум (лише фактичні дні)"), unsafe_allow_html=True)
     col3.markdown(custom_metric("Коефіцієнт варіації (CV)", f"{cv:.1f}%" if cv > 0 else "—", "CV = (стандартне відхилення / середнє) × 100%"), unsafe_allow_html=True)
 
-    # --- НОВИЙ ГРАФІК: Розподіл відхилень від середнього ---
-    st.subheader("📊 Розподіл відхилень від середнього")
+    # --- НОВИЙ ГРАФІК: Гістограма відхилень ---
+    st.subheader("📊 Розподіл відхилень від середнього (гістограма)")
 
     # Підготовка даних
     daily_totals = filtered.groupby("date")["value"].sum().reset_index()
     daily_totals["is_weekend"] = daily_totals["date"].dt.dayofweek >= 5
     daily_totals["weekday"] = daily_totals["date"].dt.day_name()
 
-    if daily_totals.empty:
-        st.info("Недостатньо даних для побудови графіка розподілу.")
+    if daily_totals.empty or len(daily_totals) < 3:
+        st.info("Недостатньо даних для побудови гістограми розподілу.")
     else:
         # Загальне середнє
         mean_all = daily_totals["value"].mean()
@@ -1164,30 +1164,52 @@ with tab4:
         dev_df = dev_df.dropna(subset=["deviation"])
 
         if dev_df.empty:
-            st.info("Недостатньо даних для побудови графіка розподілу.")
+            st.info("Недостатньо даних для побудови гістограми розподілу.")
         else:
-            # Створюємо графік
-            fig_dev = px.violin(
-                dev_df,
-                x="group",
-                y="deviation",
-                box=True,
-                points="all",
-                labels={"deviation": "Відхилення від середнього, %", "group": ""},
-                color="group",
-                color_discrete_sequence=px.colors.qualitative.Set2,
-                title="Розподіл відхилень від середнього"
-            )
-            # Додаємо горизонтальну лінію на 0%
-            fig_dev.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="0% (середнє)")
+            # Визначаємо кількість бінів (можна зробити автоматично або задати)
+            n_bins = 15  # можна налаштувати
 
-            fig_dev.update_layout(
-                height=400,
-                margin=dict(l=10, r=10, t=20, b=10),
-                legend=dict(title="")
-            )
+            # Створюємо три окремі гістограми в трьох колонках
+            col1, col2, col3 = st.columns(3)
 
-            st.plotly_chart(fig_dev, use_container_width=True)
+            groups = dev_df["group"].unique()
+            # Впорядковуємо групи: Всі дні, Будні, Вихідні
+            group_order = ["Всі дні", "Будні", "Вихідні"]
+            group_order = [g for g in group_order if g in groups]
+
+            for i, group_name in enumerate(group_order):
+                data = dev_df[dev_df["group"] == group_name]["deviation"]
+                if data.empty:
+                    continue
+
+                fig_hist = px.histogram(
+                    data,
+                    nbins=n_bins,
+                    labels={"value": "Відхилення, %", "count": "Кількість днів"},
+                    title=group_name,
+                    color_discrete_sequence=["#2E86C1"],
+                )
+                # Додаємо вертикальну лінію на 0%
+                fig_hist.add_vline(x=0, line_dash="dash", line_color="red", annotation_text="0%")
+
+                # Оновлюємо макет
+                fig_hist.update_layout(
+                    height=300,
+                    margin=dict(l=10, r=10, t=30, b=10),
+                    xaxis_title="Відхилення, %",
+                    yaxis_title="Кількість днів",
+                )
+
+                # Відображаємо в колонці
+                if i == 0:
+                    with col1:
+                        st.plotly_chart(fig_hist, use_container_width=True)
+                elif i == 1:
+                    with col2:
+                        st.plotly_chart(fig_hist, use_container_width=True)
+                elif i == 2:
+                    with col3:
+                        st.plotly_chart(fig_hist, use_container_width=True)
 
             # Показуємо статистику під графіком
             stats = []
