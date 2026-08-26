@@ -315,6 +315,7 @@ def forecast_scenarios(df, current_month):
                 "remaining_days": remaining_days,
                 "prev_fact_sum": prev_fact["value"].sum(),
                 "prev_remaining_sum": prev_remaining["value"].sum(),
+                "forecast_remaining": forecast_remaining,
                 "has_prev_year": True,
             }
         else:
@@ -584,6 +585,12 @@ st.markdown("""
         font-weight: 600;
         color: inherit !important;
     }
+    .forecast-detail {
+        font-size: 0.7rem !important;
+        color: inherit !important;
+        opacity: 0.8;
+        margin: 0.1rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -692,19 +699,28 @@ with tab1:
 
         if season_forecast:
             st.markdown("**📅 Сезонний прогноз** (на основі динаміки аналогічного періоду минулого року)")
-            # Показуємо коефіцієнт сезонності
-            st.caption(f"Коефіцієнт сезонності: {season_forecast['seasonality_factor']:.2f}× (поточний рік / минулий рік за {season_forecast['days_passed']} днів)")
+
+            # Детальна інформація для перевірки
+            with st.expander("🔍 Деталі розрахунку сезонного прогнозу"):
+                st.write(f"**Днів минуло:** {season_forecast['days_passed']}")
+                st.write(f"**Сума за поточний період (факт):** {season_forecast['fact']:,.0f}")
+                st.write(f"**Сума за аналогічний період минулого року:** {season_forecast['prev_fact_sum']:,.0f}")
+                st.write(f"**Коефіцієнт сезонності:** {season_forecast['seasonality_factor']:.3f}")
+                st.write(f"**Сума за залишок місяця (минулий рік):** {season_forecast['prev_remaining_sum']:,.0f}")
+                st.write(f"**Прогноз на залишок (з урахуванням коефіцієнта):** {season_forecast['forecast_remaining']:,.0f}")
+                st.write(f"**Загальний прогноз (факт + прогноз на залишок):** {season_forecast['base']:,.0f}")
+
             forecast_cards(
                 "Сезон.",
                 season_forecast,
-                help_base="факт + (значення минулого року × коеф. сезонності)",
+                help_base="факт + (залишок минулого року × коеф. сезонності)",
                 help_min="факт + 0.9 × прогноз на залишок",
                 help_max="факт + 1.1 × прогноз на залишок"
             )
 
     st.divider()
 
-    # --- Загальна динаміка (тільки фактичні дані, без прогнозу) ---
+    # --- Загальна динаміка (тільки фактичні дані) ---
     st.subheader("📈 Динаміка за період")
 
     if operation_mode == "Тотал":
