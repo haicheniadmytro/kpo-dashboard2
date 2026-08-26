@@ -240,6 +240,12 @@ def detect_anomalies(df, window=14, threshold=1.5):
 
 
 def forecast_scenarios(df, current_month):
+    """
+    Повертає прогнозні сценарії на основі:
+    - середнього за минулі дні
+    - стандартного відхилення
+    Прогноз будується як факт + середнє/песимістичне/оптимістичне на дні, що залишилися.
+    """
     if df.empty or current_month not in df["month"].values:
         return None
 
@@ -260,15 +266,24 @@ def forecast_scenarios(df, current_month):
     std_daily = daily_sums.std()
 
     total_days = pd.Period(current_month).days_in_month
+    remaining_days = total_days - days_passed
 
-    base_forecast = avg_daily * total_days
-    min_forecast = max(0, (avg_daily - 0.5 * std_daily) * total_days)
-    max_forecast = (avg_daily + 0.5 * std_daily) * total_days
+    # Базовий прогноз: факт + середнє за минулі дні * залишок днів
+    base_forecast = fact_sum + avg_daily * remaining_days
+
+    # Консервативний (мінімальний): факт + max(0, середнє - 0.5*std) * залишок
+    conservative_daily = max(0, avg_daily - 0.5 * std_daily)
+    min_forecast = fact_sum + conservative_daily * remaining_days
+
+    # Оптимістичний: факт + (середнє + 0.5*std) * залишок
+    optimistic_daily = avg_daily + 0.5 * std_daily
+    max_forecast = fact_sum + optimistic_daily * remaining_days
 
     return {
         "fact": fact_sum,
         "days_passed": days_passed,
         "total_days": total_days,
+        "remaining_days": remaining_days,
         "avg_daily": avg_daily,
         "std_daily": std_daily,
         "base_forecast": base_forecast,
@@ -312,10 +327,18 @@ available_months = (
     .tolist()
 )
 
+# Визначаємо поточний місяць для дефолтного вибору
+current_month_str = datetime.now().strftime("%Y-%m")
+# Якщо поточний місяць є в доступних, вибираємо його, інакше останній доступний
+if current_month_str in available_months:
+    default_months = [current_month_str]
+else:
+    default_months = available_months[-1:] if available_months else []
+
 selected_months = st.sidebar.multiselect(
     "Місяць",
     options=available_months,
-    default=available_months,
+    default=default_months,
     format_func=lambda x: pd.Period(x).strftime("%m.%Y"),
 )
 
@@ -537,7 +560,7 @@ with tab1:
     with col3:
         if forecast:
             val = f"{forecast['base_forecast']:,.0f}"
-            help_txt = "Базовий прогноз на поточний місяць"
+            help_txt = "Базовий прогноз на кінець місяця (факт + середнє на залишок днів)"
         else:
             val = "—"
             help_txt = None
@@ -662,11 +685,11 @@ with tab1:
         with col1:
             st.markdown(custom_metric("Факт (на сьогодні)", f"{forecast['fact']:,.0f}"), unsafe_allow_html=True)
         with col2:
-            st.markdown(custom_metric("Базовий прогноз", f"{forecast['base_forecast']:,.0f}", "середнє за минулі дні × кількість днів у місяці"), unsafe_allow_html=True)
+            st.markdown(custom_metric("Базовий прогноз", f"{forecast['base_forecast']:,.0f}", "факт + середнє × залишок днів"), unsafe_allow_html=True)
         with col3:
-            st.markdown(custom_metric("Мінімальний", f"{forecast['min_forecast']:,.0f}", "(середнє - 0.5×σ) × кількість днів (не менше 0)"), unsafe_allow_html=True)
+            st.markdown(custom_metric("Консервативний", f"{forecast['min_forecast']:,.0f}", "факт + (середнє - 0.5×σ) × залишок (не менше 0)"), unsafe_allow_html=True)
         with col4:
-            st.markdown(custom_metric("Оптимістичний", f"{forecast['max_forecast']:,.0f}", "(середнє + 0.5×σ) × кількість днів"), unsafe_allow_html=True)
+            st.markdown(custom_metric("Оптимістичний", f"{forecast['max_forecast']:,.0f}", "факт + (середнє + 0.5×σ) × залишок"), unsafe_allow_html=True)
 
         fact_daily = filtered[filtered["date"].dt.day <= forecast["days_passed"]]
         fact_daily = fact_daily.groupby("date")["value"].sum().reset_index()
@@ -685,6 +708,7 @@ with tab1:
             avg_daily = forecast["avg_daily"]
             std_daily = forecast["std_daily"]
 
+            # Для прогнозного графіка будуємо накопичені значення за сценаріями
             cum_base = last_cum
             cum_min = last_cum
             cum_max = last_cum
@@ -692,6 +716,7 @@ with tab1:
             min_forecast_vals = []
             max_forecast_vals = []
 
+            # Використовуємо ті ж самі значення, що й у прогнозних метриках
             for i, _ in enumerate(future_dates):
                 cum_base += avg_daily
                 cum_min += max(0, avg_daily - 0.5 * std_daily)
