@@ -613,7 +613,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Динаміка", "�
 # TAB 1: OVERVIEW
 # ============================================================
 with tab1:
-    # Рядок 1
+    # --- Рядок 1: 6 колонок ---
     col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
@@ -623,21 +623,29 @@ with tab1:
         st.markdown(custom_metric("Середнє за день", f"{daily_avg:.0f}", f"Сумарна кількість поділена на {num_days} календарних днів у вибраному періоді"), unsafe_allow_html=True)
 
     with col3:
-        st.markdown(custom_metric("Пік за день", f"{peak:,.0f}", "Найбільша кількість операцій за один день (лише фактичні дні)"), unsafe_allow_html=True)
+        avg_weekday_str = f"{daily_avg_weekday:.0f}" if daily_avg_weekday is not None and not pd.isna(daily_avg_weekday) else "—"
+        st.markdown(custom_metric("Середнє за будні", avg_weekday_str, "Середня кількість операцій у будні (лише фактичні дні)"), unsafe_allow_html=True)
 
     with col4:
-        st.markdown(custom_metric("Мінімум за день", f"{min_val:,.0f}", "Найменша кількість операцій за один день (лише фактичні дні)"), unsafe_allow_html=True)
+        avg_weekend_str = f"{daily_avg_weekend:.0f}" if daily_avg_weekend is not None and not pd.isna(daily_avg_weekend) else "—"
+        st.markdown(custom_metric("Середнє за вихідні", avg_weekend_str, "Середня кількість операцій у вихідні (лише фактичні дні)"), unsafe_allow_html=True)
 
     with col5:
-        st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×", "У скільки разів пік перевищує середнє"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Пік за день", f"{peak:,.0f}", "Найбільша кількість операцій за один день (лише фактичні дні)"), unsafe_allow_html=True)
 
     with col6:
-        st.markdown(custom_metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—", "Коефіцієнт варіації (лише фактичні дні)"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Мінімум за день", f"{min_val:,.0f}", "Найменша кількість операцій за один день (лише фактичні дні)"), unsafe_allow_html=True)
 
-    # --- Рядок 2: 6 колонок (щоб було симетрично з першим рядом) ---
-    col7, col8, col9, col10, col11, col12 = st.columns(6)
+    # --- Рядок 2: 5 колонок ---
+    col7, col8, col9, col10, col11 = st.columns(5)
 
     with col7:
+        st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×", "У скільки разів пік перевищує середнє"), unsafe_allow_html=True)
+
+    with col8:
+        st.markdown(custom_metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—", "Коефіцієнт варіації (лише фактичні дні)"), unsafe_allow_html=True)
+
+    with col9:
         if busiest_weekday:
             days_ua = {
                 "Monday": "Пн", "Tuesday": "Вт", "Wednesday": "Ср",
@@ -651,7 +659,7 @@ with tab1:
             help_txt = None
         st.markdown(custom_metric("Найактивніший день", val, help_txt), unsafe_allow_html=True)
 
-    with col8:
+    with col10:
         if busiest_op:
             display_name = busiest_op if len(busiest_op) <= 12 else busiest_op[:10] + "…"
             val = f'{display_name} — {busiest_op_val:,.0f}'
@@ -660,14 +668,6 @@ with tab1:
             val = "—"
             help_txt = None
         st.markdown(custom_metric("Найактивніша операція", val, help_txt), unsafe_allow_html=True)
-
-    with col9:
-        avg_weekday_str = f"{daily_avg_weekday:.0f}" if daily_avg_weekday is not None and not pd.isna(daily_avg_weekday) else "—"
-        st.markdown(custom_metric("Середнє за будні", avg_weekday_str, "Середня кількість операцій у будні (лише фактичні дні)"), unsafe_allow_html=True)
-
-    with col10:
-        avg_weekend_str = f"{daily_avg_weekend:.0f}" if daily_avg_weekend is not None and not pd.isna(daily_avg_weekend) else "—"
-        st.markdown(custom_metric("Середнє за вихідні", avg_weekend_str, "Середня кількість операцій у вихідні (лише фактичні дні)"), unsafe_allow_html=True)
 
     with col11:
         if len(selected_months) == 1 and operation_mode == "Тотал":
