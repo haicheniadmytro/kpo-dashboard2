@@ -1214,13 +1214,21 @@ with tab4:
             if median_all is not None:
                 fig_density.add_vline(x=median_all, line_dash="dash", line_color="black", annotation_text=f"Медіана ({median_all:.1f}%)")
 
+            # Легенда зліва зверху, щоб не заважати
             fig_density.update_layout(
                 title="Криві щільності відхилень від середнього",
                 xaxis_title="Відхилення, %",
                 yaxis_title="Щільність",
                 height=400,
                 margin=dict(l=10, r=10, t=40, b=10),
-                legend=dict(title="Група"),
+                legend=dict(
+                    title="Група",
+                    x=0.02,
+                    y=0.98,
+                    bgcolor='rgba(255,255,255,0.8)',
+                    bordercolor='rgba(0,0,0,0.2)',
+                    borderwidth=1
+                ),
                 hovermode="x unified"
             )
 
@@ -1247,12 +1255,16 @@ with tab4:
                 """)
 
             # Показуємо статистику під графіком (додаємо медіани)
+            median_all_str = f"{median_all:.1f}" if median_all is not None else "—"
+            median_wd_str = f"{median_wd:.1f}" if median_wd is not None else "—"
+            median_we_str = f"{median_we:.1f}" if median_we is not None else "—"
+
             stats = []
-            stats.append(f"**Всі дні:** середнє = {mean_all:.1f}, медіана = {median_all:.1f if median_all is not None else '—'}, CV = {cv:.1f}%")
+            stats.append(f"**Всі дні:** середнє = {mean_all:.1f}, медіана = {median_all_str}, CV = {cv:.1f}%")
             if mean_weekday is not None:
-                stats.append(f"**Будні:** середнє = {mean_weekday:.1f}, медіана = {median_wd:.1f if median_wd is not None else '—'}")
+                stats.append(f"**Будні:** середнє = {mean_weekday:.1f}, медіана = {median_wd_str}")
             if mean_weekend is not None:
-                stats.append(f"**Вихідні:** середнє = {mean_weekend:.1f}, медіана = {median_we:.1f if median_we is not None else '—'}")
+                stats.append(f"**Вихідні:** середнє = {mean_weekend:.1f}, медіана = {median_we_str}")
 
             st.markdown(" ".join(stats), unsafe_allow_html=True)
 
