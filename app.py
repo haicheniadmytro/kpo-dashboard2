@@ -132,6 +132,8 @@ def load_data():
                 row = values[r]
                 for day_idx in range(days):
                     col = 4 + day_idx  # E = index 4
+                    # TRUE – парні колонки (D, F, H, ...) => day_idx парний
+                    is_true_col = (day_idx % 2 == 0)
                     value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
@@ -145,6 +147,7 @@ def load_data():
                             "month_name": date.strftime("%b %Y"),
                             "weekday": date.day_name(),
                             "is_weekend": date.weekday() >= 5,
+                            "is_true_col": is_true_col,
                         }
                     )
 
@@ -170,6 +173,26 @@ def load_data():
     )
     total = total.merge(date_metadata, on="date", how="left")
     df = pd.concat([df, total], ignore_index=True)
+
+    # --- Агрегація TRUE/FALSE для кожної дати та операції ---
+    true_false_agg = (
+        df_raw.groupby(["date", "operation", "is_true_col"])["value"]
+        .sum()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
+    # Перейменовуємо колонки: is_true_col=False -> sum_false, is_true_col=True -> sum_true
+    true_false_agg.columns = ["date", "operation", "sum_false", "sum_true"]
+    # Якщо якоїсь колонки немає, додаємо
+    if "sum_true" not in true_false_agg.columns:
+        true_false_agg["sum_true"] = 0
+    if "sum_false" not in true_false_agg.columns:
+        true_false_agg["sum_false"] = 0
+
+    # Додаємо суми TRUE/FALSE до основного df
+    df = df.merge(true_false_agg, on=["date", "operation"], how="left")
+    df["sum_true"] = df["sum_true"].fillna(0)
+    df["sum_false"] = df["sum_false"].fillna(0)
 
     return df
 
@@ -1245,7 +1268,7 @@ with tab4:
                     y=0.98,
                     xanchor='right',
                     yanchor='top',
-                    bgcolor='rgba(0,0,0,0)',  # повністю прозорий фон
+                    bgcolor='rgba(0,0,0,0)',
                 ),
                 hovermode="x unified"
             )
@@ -1285,6 +1308,52 @@ with tab4:
                 stats.append(f"**Вихідні:** середнє = {mean_weekend:.1f}, медіана = {median_we_str}")
 
             st.markdown(" ".join(stats), unsafe_allow_html=True)
+
+    # --- НОВИЙ ГРАФІК: Динаміка % погоджень ---
+    st.subheader("📈 Динаміка % погоджень")
+
+    # Підготовка даних для графіка % погоджень
+    # Використовуємо filtered, який вже має sum_true і sum_false
+    if operation_mode == "Тотал":
+        # Для "Тотал" використовуємо безпосередньо
+        approval_df = filtered[["date", "sum_true", "sum_false"]].copy()
+    else:
+        # Якщо вибрано кілька операцій, групуємо по даті і підсумовуємо TRUE/FALSE
+        approval_df = filtered.groupby("date", as_index=False)[["sum_true", "sum_false"]].sum()
+
+    # Розраховуємо відсоток погоджень
+    approval_df["total"] = approval_df["sum_true"] + approval_df["sum_false"]
+    # Якщо total=0, ставимо NaN, щоб не малювати точку
+    approval_df["approval_rate"] = approval_df.apply(
+        lambda row: row["sum_true"] / row["total"] * 100 if row["total"] > 0 else None,
+        axis=1
+    )
+
+    # Видаляємо дні без даних
+    approval_df = approval_df.dropna(subset=["approval_rate"])
+
+    if not approval_df.empty:
+        fig_approval = px.line(
+            approval_df,
+            x="date",
+            y="approval_rate",
+            markers=True,
+            labels={"date": "Дата", "approval_rate": "% погоджень"},
+            title="Динаміка % погоджень (TRUE / (TRUE+FALSE))"
+        )
+        fig_approval.add_hline(y=50, line_dash="dash", line_color="gray", annotation_text="50%")
+        fig_approval.update_layout(
+            height=380,
+            hovermode="x unified",
+            margin=dict(l=10, r=10, t=20, b=10),
+        )
+        st.plotly_chart(fig_approval, use_container_width=True)
+
+        # Показуємо середній % за період
+        avg_approval = approval_df["approval_rate"].mean()
+        st.metric("Середній % погоджень за період", f"{avg_approval:.1f}%")
+    else:
+        st.info("Немає даних для побудови графіка % погоджень.")
 
     st.subheader("📈 Співвідношення пік / середнє")
     st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—", "У скільки разів максимальне денне значення перевищує середнє"), unsafe_allow_html=True)
