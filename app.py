@@ -53,12 +53,13 @@ ALIASES = {
 
 
 def as_number(value):
-    if value is None or value == "":
+    if value is None or value == "" or isinstance(value, bool):
         return 0.0
-    if isinstance(value, bool):
-        return 0.0
+    # Видаляємо звичайні та нерозривні пробіли (\xa0), замінюємо кому на крапку
+    val_str = str(value).replace("\xa0", "").replace(" ", "").replace(",", ".")
+    val_str = re.sub(r"[^\d.-]", "", val_str)
     try:
-        return float(str(value).replace(",", "."))
+        return float(val_str)
     except (TypeError, ValueError):
         return 0.0
 
@@ -149,7 +150,7 @@ def load_data():
                 if operation not in OPERATIONS:
                     break
 
-                # Зчитуємо Погоджено (колонка B / індекс 1) та Не погоджено (колонка C / індекс 2) для кожної операції
+                # Зчитуємо Погоджено (колонка B / індекс 1) та Відхилено (колонка C / індекс 2)
                 op_true = as_number(values[r][1]) if len(values[r]) > 1 else 0
                 op_false = as_number(values[r][2]) if len(values[r]) > 2 else 0
                 op_true_false.append({
@@ -494,7 +495,7 @@ daily_total = filtered.groupby("date")["value"].sum()
 total_value = daily_total.sum()
 daily_avg = total_value / num_days if num_days > 0 else 0
 
-# Середнє за будні та вихідні (тільки на основі фактичних днів)
+# Середнє за будні та вихідні
 weekday_mask = filtered["is_weekend"] == False
 weekend_mask = filtered["is_weekend"] == True
 
@@ -516,7 +517,7 @@ busiest_weekday, busiest_weekday_val = calc_busiest_weekday(filtered)
 busiest_op, busiest_op_val = calc_busiest_operation(filtered)
 std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
-# --- Розрахунок % погоджень ---
+# --- Точний розрахунок % погоджень ---
 tf_filtered = filtered[["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
 sum_true_total = tf_filtered["sum_true"].sum()
 sum_false_total = tf_filtered["sum_false"].sum()
