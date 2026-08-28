@@ -534,24 +534,11 @@ std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
 # --- Розрахунок % погоджень ---
 # % погоджень = TRUE / (TRUE + FALSE) * 100
-#
-# Для режиму "Тотал" використовуємо TRUE/FALSE, які безпосередньо
-# зчитуються з рядка "Тотал" у Google Таблиці.
-#
-# Для вибраних операцій НЕ використовуємо колонки sum_true/sum_false,
-# оскільки вони є денними агрегатами. Натомість рахуємо TRUE/FALSE
-# безпосередньо з is_true_col, тобто з фактичних значень вибраних
-# операцій за вибраний період. Це дозволяє коректно працювати як
-# з однією, так і з декількома вибраними операціями.
-if operation_mode == "Тотал":
-    sum_true_total = filtered["sum_true"].sum()
-    sum_false_total = filtered["sum_false"].sum()
-else:
-    true_mask = filtered["is_true_col"].eq(True)
-    false_mask = filtered["is_true_col"].eq(False)
-
-    sum_true_total = filtered.loc[true_mask, "value"].sum()
-    sum_false_total = filtered.loc[false_mask, "value"].sum()
+# Для кожної date + operation TRUE/FALSE вже агреговані
+# у колонках sum_true / sum_false, тому вони коректно
+# сумуються як для однієї, так і для декількох операцій.
+sum_true_total = filtered["sum_true"].sum()
+sum_false_total = filtered["sum_false"].sum()
 
 total_ratio = sum_true_total + sum_false_total
 approval_rate = (sum_true_total / total_ratio * 100) if total_ratio > 0 else 0
