@@ -91,6 +91,8 @@ def load_data():
     spreadsheet = client.open_by_key(SPREADSHEET_ID)
 
     records = []
+    # Словник для зберігання сум TRUE/FALSE з рядка "Тотал" для кожного місяця
+    total_true_false = {}
 
     for sheet_name in SHEETS:
         worksheet = spreadsheet.worksheet(sheet_name)
@@ -108,6 +110,21 @@ def load_data():
                 month_rows.append((idx, parsed[0], parsed[1]))
 
         for month_idx, (header_row, month, year) in enumerate(month_rows):
+            # --- Зчитуємо рядок "Тотал" (колонки B і C) ---
+            # Рядок "Тотал" зазвичай знаходиться через 1-2 рядки після заголовка місяця
+            total_row_idx = None
+            for r in range(header_row + 1, min(header_row + 10, len(values))):
+                if len(values[r]) > 2 and values[r][0] == "Тотал":
+                    total_row_idx = r
+                    break
+            if total_row_idx is not None:
+                # Колонка B = індекс 1, колонка C = індекс 2
+                sum_true = as_number(values[total_row_idx][1]) if len(values[total_row_idx]) > 1 else 0
+                sum_false = as_number(values[total_row_idx][2]) if len(values[total_row_idx]) > 2 else 0
+                month_key = f"{year}-{month:02d}"
+                total_true_false[month_key] = {"sum_true": sum_true, "sum_false": sum_false}
+
+            # --- Зчитуємо деталізовані дані ---
             detail_start = None
             for r in range(header_row + 1, min(header_row + 30, len(values))):
                 if len(values[r]) > 3 and values[r][3] in OPERATIONS:
@@ -132,6 +149,7 @@ def load_data():
                 row = values[r]
                 for day_idx in range(days):
                     col = 4 + day_idx  # E = index 4
+                    is_true_col = (day_idx % 2 == 0)
                     value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
@@ -145,6 +163,7 @@ def load_data():
                             "month_name": date.strftime("%b %Y"),
                             "weekday": date.day_name(),
                             "is_weekend": date.weekday() >= 5,
+                            "is_true_col": is_true_col,
                         }
                     )
 
@@ -170,6 +189,39 @@ def load_data():
     )
     total = total.merge(date_metadata, on="date", how="left")
     df = pd.concat([df, total], ignore_index=True)
+
+    # TRUE/FALSE агрегація для операцій (крім "Тотал")
+    true_false_agg = (
+        df_raw.groupby(["date", "operation", "is_true_col"])["value"]
+        .sum()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
+    true_false_agg.columns = ["date", "operation", "sum_false", "sum_true"]
+    if "sum_true" not in true_false_agg.columns:
+        true_false_agg["sum_true"] = 0
+    if "sum_false" not in true_false_agg.columns:
+        true_false_agg["sum_false"] = 0
+
+    df = df.merge(true_false_agg, on=["date", "operation"], how="left")
+    df["sum_true"] = df["sum_true"].fillna(0)
+    df["sum_false"] = df["sum_false"].fillna(0)
+
+    # Додаємо загальні суми TRUE/FALSE для рядка "Тотал" (з total_true_false)
+    # Для цього створимо окремий DataFrame з цими сумами і приєднаємо до df для рядків з operation == "Тотал"
+    total_tf_df = pd.DataFrame([
+        {"month": month, "sum_true": data["sum_true"], "sum_false": data["sum_false"]}
+        for month, data in total_true_false.items()
+    ])
+    if not total_tf_df.empty:
+        # Додаємо колонку з місяцем для об'єднання
+        df = df.merge(total_tf_df, on="month", how="left", suffixes=("", "_total"))
+        # Для рядків з operation == "Тотал" замінюємо sum_true і sum_false на значення з total
+        mask = df["operation"] == "Тотал"
+        df.loc[mask, "sum_true"] = df.loc[mask, "sum_true_total"]
+        df.loc[mask, "sum_false"] = df.loc[mask, "sum_false_total"]
+        # Видаляємо тимчасові колонки
+        df = df.drop(columns=["sum_true_total", "sum_false_total"])
 
     return df
 
@@ -241,9 +293,6 @@ def detect_anomalies(df, window=14, threshold=1.5):
 
 
 def gaussian_kde_np(data, x_grid, bandwidth=None):
-    """
-    Обчислення оцінки густини за допомогою гауссового ядра (векторизована версія).
-    """
     data = np.asarray(data, dtype=float)
     data = data[np.isfinite(data)]
     n = len(data)
@@ -262,11 +311,6 @@ def gaussian_kde_np(data, x_grid, bandwidth=None):
 
 
 def forecast_scenarios(df, current_month):
-    """
-    Повертає два прогнози для поточного місяця:
-    1. Статистичний (середнє ± 0.5×std)
-    2. Сезонний (на основі динаміки минулого року)
-    """
     if df.empty or current_month not in df["month"].values:
         return None, None
 
@@ -289,7 +333,6 @@ def forecast_scenarios(df, current_month):
     total_days = pd.Period(current_month).days_in_month
     remaining_days = total_days - days_passed
 
-    # --- 1. СТАТИСТИЧНИЙ ПРОГНОЗ ---
     stat_base = fact_sum + avg_daily * remaining_days
     stat_min = fact_sum + max(0, avg_daily - 0.5 * std_daily) * remaining_days
     stat_max = fact_sum + (avg_daily + 0.5 * std_daily) * remaining_days
@@ -306,7 +349,6 @@ def forecast_scenarios(df, current_month):
         "remaining_days": remaining_days,
     }
 
-    # --- 2. СЕЗОННИЙ ПРОГНОЗ (на основі минулого року) ---
     current_period = pd.Period(current_month)
     prev_period = current_period - 12
     prev_period_str = str(prev_period)
@@ -319,9 +361,7 @@ def forecast_scenarios(df, current_month):
         if not prev_fact.empty and prev_fact["value"].sum() > 0:
             seasonality_factor = fact_sum / prev_fact["value"].sum()
             seasonality_factor = max(0.3, min(3.0, seasonality_factor))
-
             forecast_remaining = prev_remaining["value"].sum() * seasonality_factor
-
             seas_base = fact_sum + forecast_remaining
             seas_min = fact_sum + forecast_remaining * 0.9
             seas_max = fact_sum + forecast_remaining * 1.1
@@ -370,7 +410,6 @@ except Exception as exc:
 st.sidebar.header("Фільтри")
 
 years = sorted(df["year"].unique())
-
 current_year = datetime.now().year
 if current_year in years:
     default_years = [current_year]
@@ -492,6 +531,30 @@ peak_avg_ratio = peak / daily_avg if daily_avg > 0 else 0
 busiest_weekday, busiest_weekday_val = calc_busiest_weekday(filtered)
 busiest_op, busiest_op_val = calc_busiest_operation(filtered)
 std, cv, cv_interp = calc_stability(filtered, daily_avg)
+
+# --- Розрахунок % погоджень ---
+# % погоджень = TRUE / (TRUE + FALSE) * 100
+#
+# Для режиму "Тотал" використовуємо TRUE/FALSE, які безпосередньо
+# зчитуються з рядка "Тотал" у Google Таблиці.
+#
+# Для вибраних операцій НЕ використовуємо колонки sum_true/sum_false,
+# оскільки вони є денними агрегатами. Натомість рахуємо TRUE/FALSE
+# безпосередньо з is_true_col, тобто з фактичних значень вибраних
+# операцій за вибраний період. Це дозволяє коректно працювати як
+# з однією, так і з декількома вибраними операціями.
+if operation_mode == "Тотал":
+    sum_true_total = filtered["sum_true"].sum()
+    sum_false_total = filtered["sum_false"].sum()
+else:
+    true_mask = filtered["is_true_col"].eq(True)
+    false_mask = filtered["is_true_col"].eq(False)
+
+    sum_true_total = filtered.loc[true_mask, "value"].sum()
+    sum_false_total = filtered.loc[false_mask, "value"].sum()
+
+total_ratio = sum_true_total + sum_false_total
+approval_rate = (sum_true_total / total_ratio * 100) if total_ratio > 0 else 0
 
 # --- Прогнози ---
 stat_forecast, season_forecast = None, None
@@ -616,7 +679,6 @@ st.markdown("""
 
 
 def forecast_cards(title, forecast, help_base=None, help_min=None, help_max=None):
-    """Відображає три картки прогнозу в одному рядку."""
     if forecast is None:
         return
     col1, col2, col3 = st.columns(3)
@@ -656,7 +718,7 @@ with tab1:
         st.markdown(custom_metric("Пік за день", f"{peak:,.0f}", "Найбільша кількість операцій за один день (лише фактичні дні)"), unsafe_allow_html=True)
 
     with col6:
-        st.markdown(custom_metric("Мінімум за день", f"{min_val:,.0f}", "Найменша кількість операцій за один день (лише фактичні дні)"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Коефіцієнт погоджень", f"{approval_rate:.1f}%", "Частка TRUE (погоджень) від загальної кількості (TRUE+FALSE) за вибраний період"), unsafe_allow_html=True)
 
     # --- Рядок 2: 5 колонок ---
     col7, col8, col9, col10, col11 = st.columns(5)
@@ -728,7 +790,6 @@ with tab1:
         if season_forecast:
             st.markdown("**📅 Сезонний прогноз** (на основі динаміки аналогічного періоду минулого року)")
 
-            # Детальна інформація для перевірки
             with st.expander("🔍 Деталі розрахунку сезонного прогнозу"):
                 st.write(f"**Період минулого року:** {season_forecast['prev_period']}")
                 st.write(f"**Днів минуло:** {season_forecast['days_passed']}")
@@ -1131,18 +1192,19 @@ with tab4:
     # --- Крива щільності відхилень з медіаною ---
     st.subheader("📊 Розподіл відхилень від середнього (крива щільності)")
 
-    # Підготовка даних
     daily_totals = filtered.groupby("date")["value"].sum().reset_index()
     daily_totals["is_weekend"] = daily_totals["date"].dt.dayofweek >= 5
+
+    median_all = None
+    median_wd = None
+    median_we = None
 
     if daily_totals.empty or len(daily_totals) < 3:
         st.info("Недостатньо даних для побудови графіка розподілу.")
     else:
-        # Загальне середнє
         mean_all = daily_totals["value"].mean()
         daily_totals["dev_all"] = (daily_totals["value"] - mean_all) / mean_all * 100
 
-        # Середнє для буднів і вихідних
         weekday_mask = daily_totals["is_weekend"] == False
         weekend_mask = daily_totals["is_weekend"] == True
 
@@ -1159,20 +1221,16 @@ with tab4:
             (daily_totals.loc[weekend_mask, "value"] - mean_weekend) / mean_weekend * 100
         ) if mean_weekend is not None and mean_weekend != 0 else None
 
-        # Збираємо дані для трьох груп
         dev_data = []
         group_names = []
-        # Всі дні
         dev_all = daily_totals["dev_all"].dropna().values
         if len(dev_all) > 1:
             dev_data.append(dev_all)
             group_names.append("Всі дні")
-        # Будні
         dev_wd = daily_totals.loc[weekday_mask, "dev_weekday"].dropna().values if weekday_mask.any() else np.array([])
         if len(dev_wd) > 1:
             dev_data.append(dev_wd)
             group_names.append("Будні")
-        # Вихідні
         dev_we = daily_totals.loc[weekend_mask, "dev_weekend"].dropna().values if weekend_mask.any() else np.array([])
         if len(dev_we) > 1:
             dev_data.append(dev_we)
@@ -1181,12 +1239,8 @@ with tab4:
         if not dev_data:
             st.info("Недостатньо даних для побудови кривих щільності.")
         else:
-            # Створюємо графік
             fig_density = go.Figure()
-
             colors = {"Всі дні": "blue", "Будні": "green", "Вихідні": "orange"}
-
-            # Для кожної групи будуємо криву щільності
             max_density = 0
             for group_name, data in zip(group_names, dev_data):
                 if len(data) > 1:
@@ -1204,9 +1258,7 @@ with tab4:
                         fill='none',
                     ))
 
-            # Якщо є дані, додаємо лінії середнього та медіани в легенду
             if max_density > 0:
-                # Лінія середнього (0%)
                 fig_density.add_trace(go.Scatter(
                     x=[0, 0],
                     y=[0, max_density * 1.1],
@@ -1215,13 +1267,7 @@ with tab4:
                     line=dict(color='red', width=2, dash='dash'),
                     showlegend=True
                 ))
-
-                # Обчислюємо медіани для кожної групи (відхилення)
                 median_all = np.median(dev_all) if len(dev_all) > 0 else None
-                median_wd = np.median(dev_wd) if len(dev_wd) > 0 else None
-                median_we = np.median(dev_we) if len(dev_we) > 0 else None
-
-                # Додаємо лінію медіани всіх днів
                 if median_all is not None:
                     fig_density.add_trace(go.Scatter(
                         x=[median_all, median_all],
@@ -1231,8 +1277,9 @@ with tab4:
                         line=dict(color='black', width=2, dash='dash'),
                         showlegend=True
                     ))
+                median_wd = np.median(dev_wd) if len(dev_wd) > 0 else None
+                median_we = np.median(dev_we) if len(dev_we) > 0 else None
 
-            # Легенда праворуч без білого фону
             fig_density.update_layout(
                 title="Криві щільності відхилень від середнього",
                 xaxis_title="Відхилення, %",
@@ -1245,14 +1292,13 @@ with tab4:
                     y=0.98,
                     xanchor='right',
                     yanchor='top',
-                    bgcolor='rgba(0,0,0,0)',  # повністю прозорий фон
+                    bgcolor='rgba(0,0,0,0)',
                 ),
                 hovermode="x unified"
             )
 
             st.plotly_chart(fig_density, use_container_width=True)
 
-            # --- Додаємо пояснення ---
             with st.expander("❓ Що означає форма кривих?"):
                 st.markdown("""
                 **Крива щільності** показує, як часто зустрічаються дні з різним відхиленням від середнього.
@@ -1272,19 +1318,18 @@ with tab4:
                 - **Порівняння груп** – якщо медіани буднів і вихідних різняться, це вказує на різні сценарії навантаження, що потрібно враховувати в плануванні.
                 """)
 
-            # Показуємо статистику під графіком (додаємо медіани)
-            median_all_str = f"{median_all:.1f}" if median_all is not None else "—"
-            median_wd_str = f"{median_wd:.1f}" if median_wd is not None else "—"
-            median_we_str = f"{median_we:.1f}" if median_we is not None else "—"
+    median_all_str = f"{median_all:.1f}" if median_all is not None else "—"
+    median_wd_str = f"{median_wd:.1f}" if median_wd is not None else "—"
+    median_we_str = f"{median_we:.1f}" if median_we is not None else "—"
 
-            stats = []
-            stats.append(f"**Всі дні:** середнє = {mean_all:.1f}, медіана = {median_all_str}, CV = {cv:.1f}%")
-            if mean_weekday is not None:
-                stats.append(f"**Будні:** середнє = {mean_weekday:.1f}, медіана = {median_wd_str}")
-            if mean_weekend is not None:
-                stats.append(f"**Вихідні:** середнє = {mean_weekend:.1f}, медіана = {median_we_str}")
+    stats = []
+    stats.append(f"**Всі дні:** середнє = {mean_all:.1f}, медіана = {median_all_str}, CV = {cv:.1f}%")
+    if mean_weekday is not None:
+        stats.append(f"**Будні:** середнє = {mean_weekday:.1f}, медіана = {median_wd_str}")
+    if mean_weekend is not None:
+        stats.append(f"**Вихідні:** середнє = {mean_weekend:.1f}, медіана = {median_we_str}")
 
-            st.markdown(" ".join(stats), unsafe_allow_html=True)
+    st.markdown(" ".join(stats), unsafe_allow_html=True)
 
     st.subheader("📈 Співвідношення пік / середнє")
     st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—", "У скільки разів максимальне денне значення перевищує середнє"), unsafe_allow_html=True)
