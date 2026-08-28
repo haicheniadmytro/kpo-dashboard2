@@ -91,8 +91,7 @@ def load_data():
     spreadsheet = client.open_by_key(SPREADSHEET_ID)
 
     records = []
-    # Словник для зберігання сум TRUE/FALSE з рядка "Тотал" для кожного місяця
-    total_true_false = {}
+    op_true_false = []
 
     for sheet_name in SHEETS:
         worksheet = spreadsheet.worksheet(sheet_name)
@@ -110,19 +109,23 @@ def load_data():
                 month_rows.append((idx, parsed[0], parsed[1]))
 
         for month_idx, (header_row, month, year) in enumerate(month_rows):
+            month_key = f"{year}-{month:02d}"
+
             # --- Зчитуємо рядок "Тотал" (колонки B і C) ---
-            # Рядок "Тотал" зазвичай знаходиться через 1-2 рядки після заголовка місяця
             total_row_idx = None
             for r in range(header_row + 1, min(header_row + 10, len(values))):
-                if len(values[r]) > 2 and values[r][0] == "Тотал":
+                if len(values[r]) > 0 and values[r][0] == "Тотал":
                     total_row_idx = r
                     break
             if total_row_idx is not None:
-                # Колонка B = індекс 1, колонка C = індекс 2
                 sum_true = as_number(values[total_row_idx][1]) if len(values[total_row_idx]) > 1 else 0
                 sum_false = as_number(values[total_row_idx][2]) if len(values[total_row_idx]) > 2 else 0
-                month_key = f"{year}-{month:02d}"
-                total_true_false[month_key] = {"sum_true": sum_true, "sum_false": sum_false}
+                op_true_false.append({
+                    "month": month_key,
+                    "operation": "Тотал",
+                    "sum_true": sum_true,
+                    "sum_false": sum_false
+                })
 
             # --- Зчитуємо деталізовані дані ---
             detail_start = None
@@ -146,10 +149,19 @@ def load_data():
                 if operation not in OPERATIONS:
                     break
 
+                # Зчитуємо Погоджено (колонка B / індекс 1) та Не погоджено (колонка C / індекс 2) для кожної операції
+                op_true = as_number(values[r][1]) if len(values[r]) > 1 else 0
+                op_false = as_number(values[r][2]) if len(values[r]) > 2 else 0
+                op_true_false.append({
+                    "month": month_key,
+                    "operation": operation,
+                    "sum_true": op_true,
+                    "sum_false": op_false
+                })
+
                 row = values[r]
                 for day_idx in range(days):
                     col = 4 + day_idx  # E = index 4
-                    is_true_col = (day_idx % 2 == 0)
                     value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
@@ -163,7 +175,6 @@ def load_data():
                             "month_name": date.strftime("%b %Y"),
                             "weekday": date.day_name(),
                             "is_weekend": date.weekday() >= 5,
-                            "is_true_col": is_true_col,
                         }
                     )
 
@@ -190,38 +201,11 @@ def load_data():
     total = total.merge(date_metadata, on="date", how="left")
     df = pd.concat([df, total], ignore_index=True)
 
-    # TRUE/FALSE агрегація для операцій (крім "Тотал")
-    true_false_agg = (
-        df_raw.groupby(["date", "operation", "is_true_col"])["value"]
-        .sum()
-        .unstack(fill_value=0)
-        .reset_index()
-    )
-    true_false_agg.columns = ["date", "operation", "sum_false", "sum_true"]
-    if "sum_true" not in true_false_agg.columns:
-        true_false_agg["sum_true"] = 0
-    if "sum_false" not in true_false_agg.columns:
-        true_false_agg["sum_false"] = 0
-
-    df = df.merge(true_false_agg, on=["date", "operation"], how="left")
+    # Приєднуємо sum_true та sum_false за унікальною парою (month, operation)
+    tf_df = pd.DataFrame(op_true_false).drop_duplicates(subset=["month", "operation"])
+    df = df.merge(tf_df, on=["month", "operation"], how="left")
     df["sum_true"] = df["sum_true"].fillna(0)
     df["sum_false"] = df["sum_false"].fillna(0)
-
-    # Додаємо загальні суми TRUE/FALSE для рядка "Тотал" (з total_true_false)
-    # Для цього створимо окремий DataFrame з цими сумами і приєднаємо до df для рядків з operation == "Тотал"
-    total_tf_df = pd.DataFrame([
-        {"month": month, "sum_true": data["sum_true"], "sum_false": data["sum_false"]}
-        for month, data in total_true_false.items()
-    ])
-    if not total_tf_df.empty:
-        # Додаємо колонку з місяцем для об'єднання
-        df = df.merge(total_tf_df, on="month", how="left", suffixes=("", "_total"))
-        # Для рядків з operation == "Тотал" замінюємо sum_true і sum_false на значення з total
-        mask = df["operation"] == "Тотал"
-        df.loc[mask, "sum_true"] = df.loc[mask, "sum_true_total"]
-        df.loc[mask, "sum_false"] = df.loc[mask, "sum_false_total"]
-        # Видаляємо тимчасові колонки
-        df = df.drop(columns=["sum_true_total", "sum_false_total"])
 
     return df
 
@@ -533,12 +517,9 @@ busiest_op, busiest_op_val = calc_busiest_operation(filtered)
 std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
 # --- Розрахунок % погоджень ---
-# % погоджень = TRUE / (TRUE + FALSE) * 100
-# Для кожної date + operation TRUE/FALSE вже агреговані
-# у колонках sum_true / sum_false, тому вони коректно
-# сумуються як для однієї, так і для декількох операцій.
-sum_true_total = filtered["sum_true"].sum()
-sum_false_total = filtered["sum_false"].sum()
+tf_filtered = filtered[["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
+sum_true_total = tf_filtered["sum_true"].sum()
+sum_false_total = tf_filtered["sum_false"].sum()
 
 total_ratio = sum_true_total + sum_false_total
 approval_rate = (sum_true_total / total_ratio * 100) if total_ratio > 0 else 0
@@ -684,7 +665,6 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Динаміка", "�
 # TAB 1: OVERVIEW
 # ============================================================
 with tab1:
-    # --- Рядок 1: 6 колонок ---
     col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
@@ -707,7 +687,6 @@ with tab1:
     with col6:
         st.markdown(custom_metric("Коефіцієнт погоджень", f"{approval_rate:.1f}%", "Частка TRUE (погоджень) від загальної кількості (TRUE+FALSE) за вибраний період"), unsafe_allow_html=True)
 
-    # --- Рядок 2: 5 колонок ---
     col7, col8, col9, col10, col11 = st.columns(5)
 
     with col7:
@@ -797,7 +776,7 @@ with tab1:
 
     st.divider()
 
-    # --- Загальна динаміка (тільки фактичні дані) ---
+    # --- Загальна динаміка ---
     st.subheader("📈 Динаміка за період")
 
     if operation_mode == "Тотал":
@@ -987,6 +966,7 @@ with tab2:
     else:
         st.info("Недостатньо даних для виявлення аномалій (потрібно щонайменше 14 днів з ненульовими значеннями).")
 
+
 # ============================================================
 # TAB 3: ОПЕРАЦІЇ
 # ============================================================
@@ -1083,6 +1063,7 @@ with tab3:
             fig_compare_ops.update_xaxes(tickformat="%d.%m", title_text="Дата")
             fig_compare_ops.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10))
             st.plotly_chart(fig_compare_ops, use_container_width=True)
+
 
 # ============================================================
 # TAB 4: НАВАНТАЖЕННЯ
