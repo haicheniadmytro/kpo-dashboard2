@@ -654,7 +654,7 @@ if period_mode == "За місяцями":
         .tolist()
     )
 
-    # Нова логіка: якщо вибрано рівно один рік і він не поточний – вибираємо всі місяці
+    # Якщо вибрано рівно один рік і він не є поточним – вибираємо всі місяці
     if len(selected_years) == 1 and selected_years[0] != current_year:
         default_months = available_months
     else:
@@ -792,7 +792,9 @@ if weekend_mask.any():
 else:
     daily_avg_weekend = None
 
+# ---- Пік та його дата ----
 peak = daily_total.max() if not daily_total.empty else 0
+peak_date = daily_total.idxmax() if not daily_total.empty else None
 min_val = daily_total.min() if not daily_total.empty else 0
 peak_avg_ratio = peak / daily_avg if daily_avg > 0 else 0
 
@@ -1045,7 +1047,15 @@ with tab1:
         st.markdown(custom_metric("Середнє за вихідні", avg_weekend_str, "Середня кількість операцій у вихідні (лише дні з внесеними даними)"), unsafe_allow_html=True)
 
     with col5:
-        st.markdown(custom_metric("Пік за день", f"{peak:,.0f}", "Найбільша кількість операцій за один день (лише дні з внесеними даними)"), unsafe_allow_html=True)
+        # Додаємо дату пікового дня
+        peak_display = f"{peak:,.0f}" if peak > 0 else "—"
+        if peak_date is not None:
+            peak_display += f" ({peak_date.strftime('%d.%m')})"
+        st.markdown(custom_metric(
+            "Пік за день",
+            peak_display,
+            "Найбільша кількість операцій за один день (лише дні з внесеними даними). У дужках – дата піку.",
+        ), unsafe_allow_html=True)
 
     with col6:
         st.markdown(custom_metric(
@@ -1499,7 +1509,7 @@ with tab3:
             )
 
     st.subheader("🌡️ Теплова карта коефіцієнта погоджень (Операція × Місяць)")
-    # FIX: Додаємо "Тотал" до теплової карти
+    # Додаємо "Тотал" до теплової карти
     tf_heat = df[period_mask][["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
 
     if tf_heat.empty:
@@ -1515,7 +1525,7 @@ with tab3:
             tf_heat["month_label"] = tf_heat["month"].apply(lambda x: pd.Period(x).strftime("%m.%Y"))
             heat_rate_pivot = tf_heat.pivot_table(index="month_label", columns="operation", values="rate", aggfunc="mean")
 
-            # FIX: Переставляємо колонки, щоб "Тотал" була першою зліва
+            # Переставляємо колонки, щоб "Тотал" була першою зліва
             cols = heat_rate_pivot.columns.tolist()
             if "Тотал" in cols:
                 cols.remove("Тотал")
@@ -1540,7 +1550,7 @@ with tab3:
                 zmin=0,
                 zmax=100,
             )
-            # FIX: Динамічна висота та авто-зменшення шрифту
+            # Динамічна висота та авто-зменшення шрифту
             row_height = 38
             min_height = 420
             max_height = 2400
@@ -1719,7 +1729,7 @@ with tab4:
     sorted_months = sorted(heat_pivot.index, key=sort_months)
     heat_pivot = heat_pivot.reindex(sorted_months)
 
-    # FIX: Динамічна висота, авто-зменшення шрифту та контейнер з прокруткою
+    # Динамічна висота, авто-зменшення шрифту та контейнер з прокруткою
     row_height = 38
     min_height = 420
     max_height = 2400
