@@ -1,6 +1,4 @@
-from pathlib import Path
-
-app_code = r'''import html
+import html
 import logging
 import re
 from dataclasses import dataclass
@@ -4196,17 +4194,3 @@ st.caption(
     "Джерело: Google Sheets • Кеш даних: 5 хвилин • Час: Europe/Kyiv • "
     "Порожні дні не трактуються як нуль у статистиці."
 )
-'''
-
-# Перевіримо синтаксис до збереження.
-import ast
-ast.parse(app_code)
-
-path = Path("/mnt/data/app.py")
-path.write_text(app_code, encoding="utf-8")
-
-# Зберігаємо також кілька базових метрик перевірки файлу.
-print(f"Готово: {path}")
-print(f"Розмір: {path.stat().st_size:,} bytes")
-print("Синтаксична перевірка AST: OK")
-print("Рядків:", len(app_code.splitlines()))
