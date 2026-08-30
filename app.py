@@ -654,11 +654,15 @@ if period_mode == "За місяцями":
         .tolist()
     )
 
-    current_month_str = now_kyiv().strftime("%Y-%m")
-    if current_month_str in available_months:
-        default_months = [current_month_str]
+    # Нова логіка: якщо вибрано рівно один рік і він не поточний – вибираємо всі місяці
+    if len(selected_years) == 1 and selected_years[0] != current_year:
+        default_months = available_months
     else:
-        default_months = available_months[-1:] if available_months else []
+        current_month_str = now_kyiv().strftime("%Y-%m")
+        if current_month_str in available_months:
+            default_months = [current_month_str]
+        else:
+            default_months = available_months[-1:] if available_months else []
 
     selected_months = st.sidebar.multiselect(
         "Місяць",
