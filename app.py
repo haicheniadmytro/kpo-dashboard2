@@ -958,6 +958,14 @@ with tab2:
         yoy_monthly["month_label"] = yoy_monthly["month"].apply(lambda x: pd.Period(x).strftime("%b"))
         yoy_monthly = yoy_monthly.sort_values(["year", "month_num"])
 
+        # Календарний порядок місяців (Jan → Dec) для осі X, незалежно від того,
+        # який рік/місяць першим зустрічається в даних (у нас таблиця починається з жовтня 2024)
+        month_axis_order = (
+            yoy_monthly.drop_duplicates("month_num")
+            .sort_values("month_num")["month_label"]
+            .tolist()
+        )
+
         fig_yoy = px.line(
             yoy_monthly,
             x="month_label",
@@ -965,7 +973,8 @@ with tab2:
             color="year",
             markers=True,
             labels={"month_label": "Місяць", "value": "Кількість", "year": "Рік"},
-            title="Порівняння місячних сум по роках"
+            title="Порівняння місячних сум по роках",
+            category_orders={"month_label": month_axis_order},
         )
         fig_yoy.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
         st.plotly_chart(fig_yoy, use_container_width=True)
