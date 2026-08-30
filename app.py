@@ -1081,6 +1081,15 @@ with tab3:
         if approval_by_op.empty:
             st.info("Немає TRUE/FALSE даних по операціях для вибраного періоду.")
         else:
+            # Коефіцієнт погоджень по "Тоталу" за той самий період — для лінії-орієнтира
+            tf_total = df[period_mask & (df["operation"] == "Тотал")][
+                ["month", "sum_true", "sum_false"]
+            ].drop_duplicates()
+            total_true = tf_total["sum_true"].sum()
+            total_false = tf_total["sum_false"].sum()
+            total_ratio_ops = total_true + total_false
+            total_rate = (total_true / total_ratio_ops * 100) if total_ratio_ops > 0 else None
+
             fig_approval = px.bar(
                 approval_by_op,
                 x="operation",
@@ -1089,25 +1098,35 @@ with tab3:
                 labels={"operation": "Операція", "approval_rate": "Коефіцієнт погоджень, %"},
                 title="Коефіцієнт погоджень по операціях (за вибраний період)",
             )
-            fig_approval.update_traces(textposition="outside")
+            fig_approval.update_traces(textposition="outside", width=0.55)
             fig_approval.update_layout(
                 height=360,
                 margin=dict(l=10, r=10, t=20, b=10),
                 yaxis=dict(range=[0, 100]),
+                bargap=0.45,
             )
+            if total_rate is not None:
+                fig_approval.add_hline(
+                    y=total_rate,
+                    line_dash="dash",
+                    line_color="red",
+                    annotation_text=f"Тотал: {total_rate:.1f}%",
+                    annotation_position="top left",
+                )
             st.plotly_chart(fig_approval, use_container_width=True)
 
-            st.dataframe(
-                approval_by_op[["operation", "sum_true", "sum_false", "total", "approval_rate"]].rename(columns={
-                    "operation": "Операція",
-                    "sum_true": "Погоджено (TRUE)",
-                    "sum_false": "Відхилено (FALSE)",
-                    "total": "Всього",
-                    "approval_rate": "Коефіцієнт погоджень, %",
-                }),
-                use_container_width=True,
-                hide_index=True,
-            )
+            with st.expander("📋 Таблиця по операціях", expanded=False):
+                st.dataframe(
+                    approval_by_op[["operation", "sum_true", "sum_false", "total", "approval_rate"]].rename(columns={
+                        "operation": "Операція",
+                        "sum_true": "Погоджено (TRUE)",
+                        "sum_false": "Відхилено (FALSE)",
+                        "total": "Всього",
+                        "approval_rate": "Коефіцієнт погоджень, %",
+                    }),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
     st.divider()
 
