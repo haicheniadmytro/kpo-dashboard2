@@ -63,6 +63,8 @@ WEEKDAY_ORDER_UA = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 TOTAL_ROW_SEARCH_RANGE = 10
 DETAIL_SEARCH_RANGE = 30
 FIRST_DAY_COLUMN = 4
+# Таблиця TRUE/FALSE по операціях (колонки A/B/C) розташована одразу під рядком "Тотал"
+PER_OP_TF_SEARCH_RANGE = len(OPERATIONS) + 3
 
 
 def now_kyiv() -> pd.Timestamp:
@@ -145,12 +147,15 @@ def load_data():
             month_key = f"{year}-{month:02d}"
             month_label = f"{month:02d}.{year}"
 
-            # --- Зчитуємо рядок "Тотал" (колонки B і C) ---
+            # --- Зчитуємо рядок "Тотал" (колонки B і C), а також таблицю TRUE/FALSE
+            # по кожній операції, яка розташована одразу під рядком "Тотал":
+            # колонка A = назва операції, B = сума TRUE (погоджено), C = сума FALSE (відхилено) ---
             total_row_idx = None
             for r in range(header_row + 1, min(header_row + TOTAL_ROW_SEARCH_RANGE, len(values))):
                 if len(values[r]) > 0 and values[r][0] == "Тотал":
                     total_row_idx = r
                     break
+
             if total_row_idx is not None:
                 sum_true = as_number(values[total_row_idx][1]) if len(values[total_row_idx]) > 1 else 0
                 sum_false = as_number(values[total_row_idx][2]) if len(values[total_row_idx]) > 2 else 0
@@ -160,6 +165,30 @@ def load_data():
                     "sum_true": sum_true,
                     "sum_false": sum_false
                 })
+
+                per_op_tf_found = set()
+                for r in range(total_row_idx + 1, min(total_row_idx + 1 + PER_OP_TF_SEARCH_RANGE, len(values))):
+                    cell_a = values[r][0] if len(values[r]) > 0 else ""
+                    op_name = cell_a.strip() if isinstance(cell_a, str) else ""
+                    op_name = ALIASES.get(op_name, op_name)
+                    if op_name not in OPERATIONS or op_name in per_op_tf_found:
+                        continue
+                    op_sum_true = as_number(values[r][1]) if len(values[r]) > 1 else 0
+                    op_sum_false = as_number(values[r][2]) if len(values[r]) > 2 else 0
+                    op_true_false.append({
+                        "month": month_key,
+                        "operation": op_name,
+                        "sum_true": op_sum_true,
+                        "sum_false": op_sum_false,
+                    })
+                    per_op_tf_found.add(op_name)
+
+                missing_tf_ops = [op for op in OPERATIONS if op not in per_op_tf_found]
+                if missing_tf_ops:
+                    warnings.append(
+                        f"⚠️ Аркуш «{sheet_name}», {month_label}: не знайдено TRUE/FALSE дані "
+                        f"для операцій: {', '.join(missing_tf_ops)}."
+                    )
             else:
                 warnings.append(
                     f"⚠️ Аркуш «{sheet_name}», {month_label}: не знайдено рядок «Тотал» "
@@ -192,15 +221,6 @@ def load_data():
 
                 if operation not in OPERATIONS:
                     break
-
-                op_true = as_number(values[r][1]) if len(values[r]) > 1 else 0
-                op_false = as_number(values[r][2]) if len(values[r]) > 2 else 0
-                op_true_false.append({
-                    "month": month_key,
-                    "operation": operation,
-                    "sum_true": op_true,
-                    "sum_false": op_false
-                })
 
                 row = values[r]
                 for day_idx in range(days):
@@ -576,17 +596,15 @@ busiest_weekday, busiest_weekday_val = calc_busiest_weekday(filtered)
 busiest_op, busiest_op_val = calc_busiest_operation(filtered)
 std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
-# --- Відображення % погоджень ТІЛЬКИ коли обрано "Тотал" ---
-if operation_mode == "Тотал":
-    tf_filtered = filtered[["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
-    sum_true_total = tf_filtered["sum_true"].sum()
-    sum_false_total = tf_filtered["sum_false"].sum()
-
-    total_ratio = sum_true_total + sum_false_total
-    approval_rate_val = (sum_true_total / total_ratio * 100) if total_ratio > 0 else 0
-    approval_rate_str = f"{approval_rate_val:.1f}%"
-else:
-    approval_rate_str = "—"
+# --- Коефіцієнт погоджень: рахується як для "Тотал", так і для вибраних операцій.
+# tf-дані по кожній (місяць, операція) продубльовані на кожен день місяця при мерджі,
+# тож drop_duplicates повертає точні місячні суми незалежно від truncation поточного місяця.
+tf_filtered = filtered[["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
+sum_true_total = tf_filtered["sum_true"].sum()
+sum_false_total = tf_filtered["sum_false"].sum()
+total_ratio = sum_true_total + sum_false_total
+approval_rate_val = (sum_true_total / total_ratio * 100) if total_ratio > 0 else 0
+approval_rate_str = f"{approval_rate_val:.1f}%" if total_ratio > 0 else "—"
 
 # --- Прогнози ---
 stat_forecast, season_forecast = None, None
@@ -753,7 +771,7 @@ with tab1:
         st.markdown(custom_metric("Пік за день", f"{peak:,.0f}", "Найбільша кількість операцій за один день (лише дні з внесеними даними)"), unsafe_allow_html=True)
 
     with col6:
-        st.markdown(custom_metric("Коефіцієнт погоджень", approval_rate_str, "Доступно лише в режимі 'Тотал' (частка погоджень від загальної кількості)"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Коефіцієнт погоджень", approval_rate_str, "Частка TRUE (погоджено) від TRUE+FALSE. У режимі 'Вибрані операції' — сукупно по обраних операціях"), unsafe_allow_html=True)
 
     col7, col8, col9, col10, col11 = st.columns(5)
 
@@ -1042,6 +1060,56 @@ with tab2:
 # ============================================================
 with tab3:
     st.subheader("🧩 Аналіз операцій")
+
+    st.subheader("✅ Коефіцієнт погоджень по операціях")
+    st.caption("Рахується для вибраних Рік/Місяць незалежно від режиму показу в сайдбарі.")
+
+    period_mask = df["year"].isin(selected_years) & df["month"].isin(selected_months)
+    tf_by_op = df[period_mask & (df["operation"] != "Тотал")][
+        ["month", "operation", "sum_true", "sum_false"]
+    ].drop_duplicates()
+
+    if tf_by_op.empty:
+        st.info("Немає TRUE/FALSE даних по операціях для вибраного періоду.")
+    else:
+        approval_by_op = tf_by_op.groupby("operation", as_index=False)[["sum_true", "sum_false"]].sum()
+        approval_by_op["total"] = approval_by_op["sum_true"] + approval_by_op["sum_false"]
+        approval_by_op = approval_by_op[approval_by_op["total"] > 0]
+        approval_by_op["approval_rate"] = (approval_by_op["sum_true"] / approval_by_op["total"] * 100).round(1)
+        approval_by_op = approval_by_op.sort_values("approval_rate", ascending=False)
+
+        if approval_by_op.empty:
+            st.info("Немає TRUE/FALSE даних по операціях для вибраного періоду.")
+        else:
+            fig_approval = px.bar(
+                approval_by_op,
+                x="operation",
+                y="approval_rate",
+                text=approval_by_op["approval_rate"].astype(str) + "%",
+                labels={"operation": "Операція", "approval_rate": "Коефіцієнт погоджень, %"},
+                title="Коефіцієнт погоджень по операціях (за вибраний період)",
+            )
+            fig_approval.update_traces(textposition="outside")
+            fig_approval.update_layout(
+                height=360,
+                margin=dict(l=10, r=10, t=20, b=10),
+                yaxis=dict(range=[0, 100]),
+            )
+            st.plotly_chart(fig_approval, use_container_width=True)
+
+            st.dataframe(
+                approval_by_op[["operation", "sum_true", "sum_false", "total", "approval_rate"]].rename(columns={
+                    "operation": "Операція",
+                    "sum_true": "Погоджено (TRUE)",
+                    "sum_false": "Відхилено (FALSE)",
+                    "total": "Всього",
+                    "approval_rate": "Коефіцієнт погоджень, %",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    st.divider()
 
     ops_data = with_data(filtered[filtered["operation"] != "Тотал"])
     if ops_data.empty:
