@@ -60,6 +60,52 @@ WEEKDAY_UA = {
 }
 WEEKDAY_ORDER_UA = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 
+# Пороги для кольорового маркування коефіцієнта погоджень
+APPROVAL_GOOD_THRESHOLD = 85
+APPROVAL_WARN_THRESHOLD = 70
+
+COLOR_GOOD = "#2ecc71"
+COLOR_WARN = "#f1c40f"
+COLOR_BAD = "#e74c3c"
+
+
+def approval_rate_color(value):
+    """Колір за порогом коефіцієнта погоджень: >=85% зелений, 70-85% жовтий, <70% червоний."""
+    if value is None:
+        return None
+    if value >= APPROVAL_GOOD_THRESHOLD:
+        return COLOR_GOOD
+    if value >= APPROVAL_WARN_THRESHOLD:
+        return COLOR_WARN
+    return COLOR_BAD
+
+
+def approval_rate_tier(value):
+    """Текстова категорія за тим самим порогом — для кольорових легенд на графіках."""
+    if value >= APPROVAL_GOOD_THRESHOLD:
+        return f"🟢 Високий (≥{APPROVAL_GOOD_THRESHOLD}%)"
+    if value >= APPROVAL_WARN_THRESHOLD:
+        return f"🟡 Середній ({APPROVAL_WARN_THRESHOLD}-{APPROVAL_GOOD_THRESHOLD}%)"
+    return f"🔴 Низький (<{APPROVAL_WARN_THRESHOLD}%)"
+
+
+APPROVAL_TIER_COLOR_MAP = {
+    approval_rate_tier(100): COLOR_GOOD,
+    approval_rate_tier(APPROVAL_WARN_THRESHOLD): COLOR_WARN,
+    approval_rate_tier(0): COLOR_BAD,
+}
+
+
+def cv_color(value):
+    """Колір за порогом коефіцієнта варіації: <15% зелений, 15-30% жовтий, >30% червоний."""
+    if value is None or value <= 0:
+        return None
+    if value < 15:
+        return COLOR_GOOD
+    if value < 30:
+        return COLOR_WARN
+    return COLOR_BAD
+
 TOTAL_ROW_SEARCH_RANGE = 10
 DETAIL_SEARCH_RANGE = 30
 FIRST_DAY_COLUMN = 4
@@ -443,6 +489,68 @@ def forecast_scenarios(df, current_month):
     return stat_forecast, season_forecast
 
 
+def forecast_approval_rate(df, current_month):
+    """Прогноз коефіцієнта погоджень на кінець поточного місяця.
+
+    ВАЖЛИВО: TRUE/FALSE дані є в таблиці лише як МІСЯЧНИЙ підсумок (без розбивки
+    по днях), тому точний прогноз "факт до сьогодні + залишок" тут неможливий,
+    на відміну від прогнозу обсягів. Натомість рахуємо орієнтовну оцінку:
+      - "поточний" коефіцієнт = TRUE / (TRUE+FALSE) станом на зараз (як записано
+        в таблиці для цього місяця);
+      - для очікуваного коефіцієнта на кінець місяця він змішується з коефіцієнтом
+        аналогічного місяця минулого року (якщо є) з вагою, що зростає в міру
+        того, скільки днів місяця ще залишилось (на початку місяця більше довіри
+        до "історичного" значення, ближче до кінця — до поточного факту).
+    Це орієнтовна оцінка, а не точний прогноз, і позначена як така в інтерфейсі.
+    """
+    if df.empty or current_month not in df["month"].values:
+        return None
+
+    today = now_kyiv()
+    if today.month != pd.Period(current_month).month or today.year != pd.Period(current_month).year:
+        return None
+
+    month_rows = df[df["month"] == current_month][["sum_true", "sum_false"]].drop_duplicates()
+    if month_rows.empty:
+        return None
+    fact_true = month_rows["sum_true"].sum()
+    fact_false = month_rows["sum_false"].sum()
+    fact_total = fact_true + fact_false
+    if fact_total <= 0:
+        return None
+    current_rate = fact_true / fact_total * 100
+
+    total_days = pd.Period(current_month).days_in_month
+    days_passed = (today - pd.Timestamp(year=today.year, month=today.month, day=1)).days + 1
+    days_passed = min(max(days_passed, 1), total_days)
+
+    prev_period = pd.Period(current_month) - 12
+    prev_rows = df[df["month"] == str(prev_period)][["sum_true", "sum_false"]].drop_duplicates()
+    prev_rate = None
+    if not prev_rows.empty:
+        prev_true = prev_rows["sum_true"].sum()
+        prev_false = prev_rows["sum_false"].sum()
+        prev_total = prev_true + prev_false
+        if prev_total > 0:
+            prev_rate = prev_true / prev_total * 100
+
+    proxy_rate = prev_rate if prev_rate is not None else current_rate
+    weight_fact = days_passed / total_days if total_days > 0 else 1.0
+    forecast_rate = current_rate * weight_fact + proxy_rate * (1 - weight_fact)
+
+    return {
+        "current_rate": current_rate,
+        "forecast_rate": forecast_rate,
+        "proxy_rate": proxy_rate,
+        "has_prev_year": prev_rate is not None,
+        "prev_period": str(prev_period),
+        "fact_true": fact_true,
+        "fact_false": fact_false,
+        "days_passed": days_passed,
+        "total_days": total_days,
+    }
+
+
 # --- Завантаження та фільтри ---
 
 st.title("📊 Dashboard погоджень КПО")
@@ -467,6 +575,20 @@ if load_warnings:
 
 st.sidebar.header("Фільтри")
 
+period_mode = st.sidebar.radio(
+    "Тип періоду",
+    options=["За місяцями", "Довільний діапазон дат"],
+    index=0,
+    help=(
+        "'За місяцями' — стандартний вибір Рік + Місяць з усіма функціями "
+        "(прогнози, MoM/YoY порівняння). 'Довільний діапазон' — будь-які дати "
+        "(напр. останні 2 тижні); прогнози та MoM/YoY порівняння в цьому режимі недоступні."
+    ),
+)
+
+min_date = df["date"].min()
+max_date = df["date"].max()
+
 years = sorted(df["year"].unique())
 current_year = now_kyiv().year
 if current_year in years:
@@ -474,31 +596,58 @@ if current_year in years:
 else:
     default_years = [years[-1]] if years else []
 
-selected_years = st.sidebar.multiselect(
-    "Рік",
-    options=years,
-    default=default_years,
-)
+custom_range = None
 
-available_months = (
-    df[df["year"].isin(selected_years)]["month"]
-    .drop_duplicates()
-    .sort_values()
-    .tolist()
-)
+if period_mode == "За місяцями":
+    selected_years = st.sidebar.multiselect(
+        "Рік",
+        options=years,
+        default=default_years,
+    )
 
-current_month_str = now_kyiv().strftime("%Y-%m")
-if current_month_str in available_months:
-    default_months = [current_month_str]
+    available_months = (
+        df[df["year"].isin(selected_years)]["month"]
+        .drop_duplicates()
+        .sort_values()
+        .tolist()
+    )
+
+    current_month_str = now_kyiv().strftime("%Y-%m")
+    if current_month_str in available_months:
+        default_months = [current_month_str]
+    else:
+        default_months = available_months[-1:] if available_months else []
+
+    selected_months = st.sidebar.multiselect(
+        "Місяць",
+        options=available_months,
+        default=default_months,
+        format_func=lambda x: pd.Period(x).strftime("%m.%Y"),
+    )
 else:
-    default_months = available_months[-1:] if available_months else []
+    default_start = max(min_date, max_date - pd.Timedelta(days=13))
+    date_range_input = st.sidebar.date_input(
+        "Діапазон дат",
+        value=(default_start.date(), max_date.date()),
+        min_value=min_date.date(),
+        max_value=max_date.date(),
+    )
+    if isinstance(date_range_input, tuple) and len(date_range_input) == 2:
+        custom_range = (pd.Timestamp(date_range_input[0]), pd.Timestamp(date_range_input[1]))
+    else:
+        single = date_range_input[0] if isinstance(date_range_input, tuple) else date_range_input
+        custom_range = (pd.Timestamp(single), pd.Timestamp(single))
+        st.sidebar.info("Оберіть другу дату діапазону.")
 
-selected_months = st.sidebar.multiselect(
-    "Місяць",
-    options=available_months,
-    default=default_months,
-    format_func=lambda x: pd.Period(x).strftime("%m.%Y"),
-)
+    if custom_range[0] > custom_range[1]:
+        custom_range = (custom_range[1], custom_range[0])
+
+    # Похідні набори років/місяців — потрібні іншим частинам дашборду
+    # (напр. для розбивки по операціях), що орієнтуються на ці списки.
+    selected_years = sorted({custom_range[0].year, custom_range[1].year})
+    selected_months = sorted({
+        d.strftime("%Y-%m") for d in pd.date_range(custom_range[0], custom_range[1], freq="D")
+    })
 
 # --- Вибір операцій ---
 operation_mode = st.sidebar.radio(
@@ -531,36 +680,45 @@ if smooth_enabled:
 
 # Фільтруємо дані
 if operation_mode == "Тотал":
+    op_mask = df["operation"] == "Тотал"
+else:
+    op_mask = df["operation"].isin(selected_operations)
+
+if period_mode == "За місяцями":
     filtered = df[
         df["year"].isin(selected_years)
         & df["month"].isin(selected_months)
-        & (df["operation"] == "Тотал")
+        & op_mask
     ].copy()
 else:
     filtered = df[
-        df["year"].isin(selected_years)
-        & df["month"].isin(selected_months)
-        & (df["operation"].isin(selected_operations))
+        (df["date"] >= custom_range[0])
+        & (df["date"] <= custom_range[1])
+        & op_mask
     ].copy()
 
 if filtered.empty:
     st.warning("За вибраними фільтрами даних немає.")
     st.stop()
 
-# --- Обробка поточного незавершеного місяця ---
+# --- Обробка поточного незавершеного місяця (лише в режимі "За місяцями") ---
 today = now_kyiv()
-if len(selected_months) == 1:
-    period = pd.Period(selected_months[0])
-    if period.start_time <= today <= period.end_time:
-        filtered = filtered[filtered["date"] <= today]
-        num_days = (today - period.start_time).days + 1
+if period_mode == "За місяцями":
+    if len(selected_months) == 1:
+        period = pd.Period(selected_months[0])
+        if period.start_time <= today <= period.end_time:
+            filtered = filtered[filtered["date"] <= today]
+            num_days = (today - period.start_time).days + 1
+        else:
+            num_days = period.days_in_month
     else:
-        num_days = period.days_in_month
+        num_days = sum(pd.Period(m).days_in_month for m in selected_months)
 else:
-    num_days = sum(pd.Period(m).days_in_month for m in selected_months)
+    filtered = filtered[filtered["date"] <= today]
+    num_days = (custom_range[1] - custom_range[0]).days + 1
 
 if filtered.empty:
-    st.warning("За вибраними фільтрами даних немає (можливо, ще немає даних за цей місяць).")
+    st.warning("За вибраними фільтрами даних немає (можливо, ще немає даних за цей період).")
     st.stop()
 
 # Дані з фактично внесеними значеннями (без порожніх клітинок) — для статистики
@@ -606,14 +764,29 @@ total_ratio = sum_true_total + sum_false_total
 approval_rate_val = (sum_true_total / total_ratio * 100) if total_ratio > 0 else 0
 approval_rate_str = f"{approval_rate_val:.1f}%" if total_ratio > 0 else "—"
 
-# --- Прогнози ---
-stat_forecast, season_forecast = None, None
-if len(selected_months) == 1 and operation_mode == "Тотал":
-    stat_forecast, season_forecast = forecast_scenarios(df[df["operation"] == "Тотал"], selected_months[0])
+# --- Коефіцієнт погоджень по кожній операції за вибраний період (для теплокарти,
+# графіка в Tab3 та інсайтів у Tab1) — не залежить від "Режиму показу" в сайдбарі,
+# лише від обраного Рік/Місяць або довільного діапазону дат.
+if period_mode == "За місяцями":
+    period_mask = df["year"].isin(selected_years) & df["month"].isin(selected_months)
+else:
+    period_mask = (df["date"] >= custom_range[0]) & (df["date"] <= custom_range[1])
 
-# --- Порівняння ---
+tf_by_op_all = df[period_mask & (df["operation"] != "Тотал")][
+    ["month", "operation", "sum_true", "sum_false"]
+].drop_duplicates()
+
+approval_by_op = pd.DataFrame(columns=["operation", "sum_true", "sum_false", "total", "approval_rate"])
+if not tf_by_op_all.empty:
+    approval_by_op = tf_by_op_all.groupby("operation", as_index=False)[["sum_true", "sum_false"]].sum()
+    approval_by_op["total"] = approval_by_op["sum_true"] + approval_by_op["sum_false"]
+    approval_by_op = approval_by_op[approval_by_op["total"] > 0].copy()
+    approval_by_op["approval_rate"] = (approval_by_op["sum_true"] / approval_by_op["total"] * 100).round(1)
+    approval_by_op = approval_by_op.sort_values("approval_rate", ascending=False)
+
+# --- Порівняння (лише в режимі "За місяцями", для одного місяця, режим "Тотал") ---
 comparison_parts = []
-if len(selected_months) == 1 and operation_mode == "Тотал":
+if period_mode == "За місяцями" and len(selected_months) == 1 and operation_mode == "Тотал":
     current_period = pd.Period(selected_months[0])
     today_comp = now_kyiv()
 
@@ -673,19 +846,21 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
 
-def custom_metric(label, value, help_text=None):
+def custom_metric(label, value, help_text=None, color=None):
     """Рендерить метрику як HTML. Усі значення екрануються (html.escape),
-    щоб дані з Google Таблиці не могли інʼєктувати довільний HTML/JS."""
+    щоб дані з Google Таблиці не могли інʼєктувати довільний HTML/JS.
+    color: опційний hex-колір значення (для порогового маркування)."""
     safe_label = html.escape(str(label))
     safe_value = html.escape(str(value))
     help_icon = ""
     if help_text:
         safe_help = html.escape(str(help_text))
         help_icon = f'<span class="help-icon" title="{safe_help}">?</span>'
+    value_style = f' style="color:{html.escape(color)};"' if color else ""
     return f"""
     <div class="metric-container">
         <div class="metric-label">{safe_label} {help_icon}</div>
-        <div class="metric-value">{safe_value}</div>
+        <div class="metric-value"{value_style}>{safe_value}</div>
     </div>
     """
 
@@ -745,7 +920,7 @@ def forecast_cards(title, forecast, help_base=None, help_min=None, help_max=None
         st.markdown(custom_metric(f"{title} (оптимістичний)", f"{forecast['max']:,.0f}", help_max), unsafe_allow_html=True)
 
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Динаміка", "🧩 Операції", "📅 Навантаження"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "📈 Динаміка", "🧩 Операції", "📅 Навантаження", "🆚 Порівняння періодів"])
 
 # ============================================================
 # TAB 1: OVERVIEW
@@ -771,7 +946,13 @@ with tab1:
         st.markdown(custom_metric("Пік за день", f"{peak:,.0f}", "Найбільша кількість операцій за один день (лише дні з внесеними даними)"), unsafe_allow_html=True)
 
     with col6:
-        st.markdown(custom_metric("Коефіцієнт погоджень", approval_rate_str, "Частка TRUE (погоджено) від TRUE+FALSE. У режимі 'Вибрані операції' — сукупно по обраних операціях"), unsafe_allow_html=True)
+        st.markdown(custom_metric(
+            "Коефіцієнт погоджень",
+            approval_rate_str,
+            "Частка TRUE (погоджено) від TRUE+FALSE. У режимі 'Вибрані операції' — сукупно по обраних операціях. "
+            f"🟢 ≥{APPROVAL_GOOD_THRESHOLD}% 🟡 {APPROVAL_WARN_THRESHOLD}-{APPROVAL_GOOD_THRESHOLD}% 🔴 <{APPROVAL_WARN_THRESHOLD}%",
+            color=approval_rate_color(approval_rate_val if total_ratio > 0 else None),
+        ), unsafe_allow_html=True)
 
     col7, col8, col9, col10, col11 = st.columns(5)
 
@@ -779,7 +960,12 @@ with tab1:
         st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×", "У скільки разів пік перевищує середнє"), unsafe_allow_html=True)
 
     with col8:
-        st.markdown(custom_metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—", "Коефіцієнт варіації (лише дні з внесеними даними)"), unsafe_allow_html=True)
+        st.markdown(custom_metric(
+            "Стабільність (CV)",
+            f"{cv:.1f}%" if cv > 0 else "—",
+            "Коефіцієнт варіації (лише дні з внесеними даними). 🟢 <15% 🟡 15-30% 🔴 >30%",
+            color=cv_color(cv if cv > 0 else None),
+        ), unsafe_allow_html=True)
 
     with col9:
         if busiest_weekday:
@@ -802,7 +988,7 @@ with tab1:
         st.markdown(custom_metric("Найактивніша операція", val, help_txt), unsafe_allow_html=True)
 
     with col11:
-        if len(selected_months) == 1 and operation_mode == "Тотал":
+        if period_mode == "За місяцями" and len(selected_months) == 1 and operation_mode == "Тотал":
             st.markdown("**Порівняння**")
             if comparison_text != "—":
                 parts = comparison_text.split("  ")
@@ -817,44 +1003,133 @@ with tab1:
                     unsafe_allow_html=True
                 )
         else:
-            st.markdown(custom_metric("Порівняння", "—", "Доступно лише для одного місяця в режимі 'Тотал'"), unsafe_allow_html=True)
+            st.markdown(custom_metric("Порівняння", "—", "Доступно лише для одного місяця в режимі 'За місяцями' + 'Тотал'"), unsafe_allow_html=True)
+
+    st.divider()
+
+    # --- АВТОМАТИЧНІ ІНСАЙТИ ---
+    st.subheader("💡 Інсайти")
+    insights = []
+
+    if total_ratio > 0:
+        if approval_rate_val >= APPROVAL_GOOD_THRESHOLD:
+            insights.append(f"🟢 Коефіцієнт погоджень **{approval_rate_str}** — вище порогу {APPROVAL_GOOD_THRESHOLD}%, хороший показник.")
+        elif approval_rate_val >= APPROVAL_WARN_THRESHOLD:
+            insights.append(f"🟡 Коефіцієнт погоджень **{approval_rate_str}** — у середній зоні ({APPROVAL_WARN_THRESHOLD}-{APPROVAL_GOOD_THRESHOLD}%), варто стежити за динамікою.")
+        else:
+            insights.append(f"🔴 Коефіцієнт погоджень **{approval_rate_str}** — нижче {APPROVAL_WARN_THRESHOLD}%, потребує уваги.")
+
+    if not approval_by_op.empty and len(approval_by_op) > 1:
+        best_row = approval_by_op.iloc[0]
+        worst_row = approval_by_op.iloc[-1]
+        if best_row["operation"] != worst_row["operation"]:
+            insights.append(
+                f"🧩 Найкращий % погоджень — **{best_row['operation']}** ({best_row['approval_rate']:.1f}%), "
+                f"найгірший — **{worst_row['operation']}** ({worst_row['approval_rate']:.1f}%)."
+            )
+
+    if cv > 0:
+        insights.append(f"{cv_interp} денного навантаження (CV = {cv:.1f}%).")
+
+    if busiest_weekday:
+        day_ua = WEEKDAY_UA.get(busiest_weekday, busiest_weekday)
+        insights.append(f"📅 Найбільше навантаження припадає на **{day_ua}** — в середньому {busiest_weekday_val:.0f} операцій/день.")
+
+    if busiest_op:
+        insights.append(f"📈 Найактивніша операція за обсягом — **{busiest_op}** ({busiest_op_val:,.0f} за період).")
+
+    if peak_avg_ratio >= 2:
+        insights.append(f"⚠️ Пік у **{peak_avg_ratio:.1f}×** перевищує середнє — можливі різкі сплески навантаження, варто мати запас потужності.")
+
+    if period_mode == "За місяцями" and comparison_text != "—":
+        insights.append(f"🔄 Порівняння з попередніми періодами: {comparison_text}.")
+
+    if insights:
+        for i in insights:
+            st.markdown(f"- {i}")
+    else:
+        st.caption("Недостатньо даних для інсайтів у вибраному періоді.")
 
     st.divider()
 
     # --- БЛОК ПРОГНОЗІВ ---
-    if stat_forecast or season_forecast:
-        st.subheader("📊 Прогнози на поточний місяць")
+    if period_mode != "За місяцями":
+        st.info("📊 Прогнози доступні лише в режимі 'За місяцями' з одним обраним місяцем.")
+    elif len(selected_months) != 1:
+        st.info("📊 Прогнози доступні лише для одного обраного місяця (виберіть один місяць у сайдбарі).")
+    else:
+        forecast_target_options = ["Тотал"] + all_ops
+        forecast_target = st.selectbox(
+            "Прогнозувати для:",
+            options=forecast_target_options,
+            index=0,
+            help="Прогноз можна будувати для Тоталу або окремої операції — незалежно від 'Режиму показу' графіків нижче.",
+        )
+        stat_forecast, season_forecast = forecast_scenarios(
+            df[df["operation"] == forecast_target], selected_months[0]
+        )
+        approval_forecast = forecast_approval_rate(
+            df[df["operation"] == forecast_target], selected_months[0]
+        )
 
-        if stat_forecast:
-            st.markdown("**📈 Статистичний прогноз** (на основі середнього та варіативності минулих днів)")
-            forecast_cards(
-                "Стат.",
-                stat_forecast,
-                help_base="факт + середнє × залишок днів",
-                help_min="факт + (середнє − 0.5×σ) × залишок (не менше 0)",
-                help_max="факт + (середнє + 0.5×σ) × залишок"
-            )
+        if stat_forecast or season_forecast or approval_forecast:
+            st.subheader(f"📊 Прогнози на поточний місяць — {forecast_target}")
 
-        if season_forecast:
-            st.markdown("**📅 Сезонний прогноз** (на основі динаміки аналогічного періоду минулого року)")
+            if stat_forecast:
+                st.markdown("**📈 Статистичний прогноз обсягу** (на основі середнього та варіативності минулих днів)")
+                forecast_cards(
+                    "Стат.",
+                    stat_forecast,
+                    help_base="факт + середнє × залишок днів",
+                    help_min="факт + (середнє − 0.5×σ) × залишок (не менше 0)",
+                    help_max="факт + (середнє + 0.5×σ) × залишок"
+                )
 
-            with st.expander("🔍 Деталі розрахунку сезонного прогнозу"):
-                st.write(f"**Період минулого року:** {season_forecast['prev_period']}")
-                st.write(f"**Днів минуло:** {season_forecast['days_passed']}")
-                st.write(f"**Сума за поточний період (факт):** {season_forecast['fact']:,.0f}")
-                st.write(f"**Сума за аналогічний період минулого року:** {season_forecast['prev_fact_sum']:,.0f}")
-                st.write(f"**Коефіцієнт сезонності:** {season_forecast['seasonality_factor']:.3f}")
-                st.write(f"**Сума за залишок місяця (минулий рік):** {season_forecast['prev_remaining_sum']:,.0f}")
-                st.write(f"**Прогноз на залишок (з урахуванням коефіцієнта):** {season_forecast['forecast_remaining']:,.0f}")
-                st.write(f"**Загальний прогноз (факт + прогноз на залишок):** {season_forecast['base']:,.0f}")
+            if season_forecast:
+                st.markdown("**📅 Сезонний прогноз обсягу** (на основі динаміки аналогічного періоду минулого року)")
 
-            forecast_cards(
-                "Сезон.",
-                season_forecast,
-                help_base="факт + (залишок минулого року × коеф. сезонності)",
-                help_min="факт + 0.9 × прогноз на залишок",
-                help_max="факт + 1.1 × прогноз на залишок"
-            )
+                with st.expander("🔍 Деталі розрахунку сезонного прогнозу"):
+                    st.write(f"**Період минулого року:** {season_forecast['prev_period']}")
+                    st.write(f"**Днів минуло:** {season_forecast['days_passed']}")
+                    st.write(f"**Сума за поточний період (факт):** {season_forecast['fact']:,.0f}")
+                    st.write(f"**Сума за аналогічний період минулого року:** {season_forecast['prev_fact_sum']:,.0f}")
+                    st.write(f"**Коефіцієнт сезонності:** {season_forecast['seasonality_factor']:.3f}")
+                    st.write(f"**Сума за залишок місяця (минулий рік):** {season_forecast['prev_remaining_sum']:,.0f}")
+                    st.write(f"**Прогноз на залишок (з урахуванням коефіцієнта):** {season_forecast['forecast_remaining']:,.0f}")
+                    st.write(f"**Загальний прогноз (факт + прогноз на залишок):** {season_forecast['base']:,.0f}")
+
+                forecast_cards(
+                    "Сезон.",
+                    season_forecast,
+                    help_base="факт + (залишок минулого року × коеф. сезонності)",
+                    help_min="факт + 0.9 × прогноз на залишок",
+                    help_max="факт + 1.1 × прогноз на залишок"
+                )
+
+            if approval_forecast:
+                st.markdown("**✅ Прогноз коефіцієнта погоджень** (орієнтовна оцінка — TRUE/FALSE є лише як місячний підсумок, без розбивки по днях)")
+                col_ar1, col_ar2 = st.columns(2)
+                with col_ar1:
+                    st.markdown(custom_metric(
+                        "Поточний коефіцієнт",
+                        f"{approval_forecast['current_rate']:.1f}%",
+                        f"TRUE {approval_forecast['fact_true']:,.0f} / FALSE {approval_forecast['fact_false']:,.0f}, станом на {approval_forecast['days_passed']} з {approval_forecast['total_days']} днів місяця",
+                        color=approval_rate_color(approval_forecast['current_rate']),
+                    ), unsafe_allow_html=True)
+                with col_ar2:
+                    proxy_note = (
+                        f"змішано з коефіцієнтом за {approval_forecast['prev_period']} (той самий місяць минулого року)"
+                        if approval_forecast["has_prev_year"]
+                        else "історичних даних за минулий рік немає — використано поточний коефіцієнт без змін"
+                    )
+                    st.markdown(custom_metric(
+                        "Прогноз на кінець місяця",
+                        f"{approval_forecast['forecast_rate']:.1f}%",
+                        f"Орієнтовна оцінка: {proxy_note}.",
+                        color=approval_rate_color(approval_forecast['forecast_rate']),
+                    ), unsafe_allow_html=True)
+        else:
+            st.info("Прогноз недоступний: немає фактичних даних за поточний місяць для цієї операції.")
 
     st.divider()
 
@@ -1062,71 +1337,104 @@ with tab3:
     st.subheader("🧩 Аналіз операцій")
 
     st.subheader("✅ Коефіцієнт погоджень по операціях")
-    st.caption("Рахується для вибраних Рік/Місяць незалежно від режиму показу в сайдбарі.")
+    st.caption("Рахується для вибраного періоду незалежно від режиму показу в сайдбарі.")
 
-    period_mask = df["year"].isin(selected_years) & df["month"].isin(selected_months)
-    tf_by_op = df[period_mask & (df["operation"] != "Тотал")][
+    if approval_by_op.empty:
+        st.info("Немає TRUE/FALSE даних по операціях для вибраного періоду.")
+    else:
+        # Коефіцієнт погоджень по "Тоталу" за той самий період — для лінії-орієнтира
+        tf_total = df[period_mask & (df["operation"] == "Тотал")][
+            ["month", "sum_true", "sum_false"]
+        ].drop_duplicates()
+        total_true = tf_total["sum_true"].sum()
+        total_false = tf_total["sum_false"].sum()
+        total_ratio_ops = total_true + total_false
+        total_rate = (total_true / total_ratio_ops * 100) if total_ratio_ops > 0 else None
+
+        approval_by_op_display = approval_by_op.copy()
+        approval_by_op_display["tier"] = approval_by_op_display["approval_rate"].apply(approval_rate_tier)
+
+        fig_approval = px.bar(
+            approval_by_op_display,
+            x="operation",
+            y="approval_rate",
+            color="tier",
+            color_discrete_map=APPROVAL_TIER_COLOR_MAP,
+            text=approval_by_op_display["approval_rate"].astype(str) + "%",
+            labels={"operation": "Операція", "approval_rate": "Коефіцієнт погоджень, %", "tier": "Категорія"},
+            title="Коефіцієнт погоджень по операціях (за вибраний період)",
+            category_orders={"operation": approval_by_op_display["operation"].tolist()},
+        )
+        fig_approval.update_traces(textposition="outside", width=0.55)
+        fig_approval.update_layout(
+            height=360,
+            margin=dict(l=10, r=10, t=20, b=10),
+            yaxis=dict(range=[0, 100]),
+            bargap=0.45,
+            legend_title_text="Категорія",
+        )
+        if total_rate is not None:
+            fig_approval.add_hline(
+                y=total_rate,
+                line_dash="dash",
+                line_color="red",
+                annotation_text=f"Тотал: {total_rate:.1f}%",
+                annotation_position="top left",
+            )
+        st.plotly_chart(fig_approval, use_container_width=True)
+
+        with st.expander("📋 Таблиця по операціях", expanded=False):
+            st.dataframe(
+                approval_by_op[["operation", "sum_true", "sum_false", "total", "approval_rate"]].rename(columns={
+                    "operation": "Операція",
+                    "sum_true": "Погоджено (TRUE)",
+                    "sum_false": "Відхилено (FALSE)",
+                    "total": "Всього",
+                    "approval_rate": "Коефіцієнт погоджень, %",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    st.subheader("🌡️ Теплова карта коефіцієнта погоджень (Операція × Місяць)")
+    tf_heat = df[period_mask & (df["operation"] != "Тотал")][
         ["month", "operation", "sum_true", "sum_false"]
     ].drop_duplicates()
 
-    if tf_by_op.empty:
-        st.info("Немає TRUE/FALSE даних по операціях для вибраного періоду.")
+    if tf_heat.empty:
+        st.info("Немає TRUE/FALSE даних для побудови теплової карти у вибраному періоді.")
     else:
-        approval_by_op = tf_by_op.groupby("operation", as_index=False)[["sum_true", "sum_false"]].sum()
-        approval_by_op["total"] = approval_by_op["sum_true"] + approval_by_op["sum_false"]
-        approval_by_op = approval_by_op[approval_by_op["total"] > 0]
-        approval_by_op["approval_rate"] = (approval_by_op["sum_true"] / approval_by_op["total"] * 100).round(1)
-        approval_by_op = approval_by_op.sort_values("approval_rate", ascending=False)
-
-        if approval_by_op.empty:
-            st.info("Немає TRUE/FALSE даних по операціях для вибраного періоду.")
+        tf_heat = tf_heat.copy()
+        tf_heat["total"] = tf_heat["sum_true"] + tf_heat["sum_false"]
+        tf_heat = tf_heat[tf_heat["total"] > 0]
+        if tf_heat.empty:
+            st.info("Немає TRUE/FALSE даних для побудови теплової карти у вибраному періоді.")
         else:
-            # Коефіцієнт погоджень по "Тоталу" за той самий період — для лінії-орієнтира
-            tf_total = df[period_mask & (df["operation"] == "Тотал")][
-                ["month", "sum_true", "sum_false"]
-            ].drop_duplicates()
-            total_true = tf_total["sum_true"].sum()
-            total_false = tf_total["sum_false"].sum()
-            total_ratio_ops = total_true + total_false
-            total_rate = (total_true / total_ratio_ops * 100) if total_ratio_ops > 0 else None
+            tf_heat["rate"] = tf_heat["sum_true"] / tf_heat["total"] * 100
+            tf_heat["month_label"] = tf_heat["month"].apply(lambda x: pd.Period(x).strftime("%m.%Y"))
+            heat_rate_pivot = tf_heat.pivot_table(index="month_label", columns="operation", values="rate", aggfunc="mean")
 
-            fig_approval = px.bar(
-                approval_by_op,
-                x="operation",
-                y="approval_rate",
-                text=approval_by_op["approval_rate"].astype(str) + "%",
-                labels={"operation": "Операція", "approval_rate": "Коефіцієнт погоджень, %"},
-                title="Коефіцієнт погоджень по операціях (за вибраний період)",
-            )
-            fig_approval.update_traces(textposition="outside", width=0.55)
-            fig_approval.update_layout(
-                height=360,
-                margin=dict(l=10, r=10, t=20, b=10),
-                yaxis=dict(range=[0, 100]),
-                bargap=0.45,
-            )
-            if total_rate is not None:
-                fig_approval.add_hline(
-                    y=total_rate,
-                    line_dash="dash",
-                    line_color="red",
-                    annotation_text=f"Тотал: {total_rate:.1f}%",
-                    annotation_position="top left",
-                )
-            st.plotly_chart(fig_approval, use_container_width=True)
+            def _sort_month_label(month_str):
+                try:
+                    return datetime.strptime(month_str, "%m.%Y")
+                except Exception:
+                    return datetime(1900, 1, 1)
 
-            with st.expander("📋 Таблиця по операціях", expanded=False):
-                st.dataframe(
-                    approval_by_op[["operation", "sum_true", "sum_false", "total", "approval_rate"]].rename(columns={
-                        "operation": "Операція",
-                        "sum_true": "Погоджено (TRUE)",
-                        "sum_false": "Відхилено (FALSE)",
-                        "total": "Всього",
-                        "approval_rate": "Коефіцієнт погоджень, %",
-                    }),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+            sorted_month_labels = sorted(heat_rate_pivot.index, key=_sort_month_label)
+            heat_rate_pivot = heat_rate_pivot.reindex(sorted_month_labels)
+
+            fig_approval_heat = px.imshow(
+                heat_rate_pivot,
+                text_auto=".1f",
+                aspect="auto",
+                labels=dict(x="Операція", y="Місяць", color="Коефіцієнт погоджень, %"),
+                color_continuous_scale="RdYlGn",
+                zmin=0,
+                zmax=100,
+            )
+            fig_approval_heat.update_layout(height=420, margin=dict(l=10, r=10, t=20, b=10))
+            st.plotly_chart(fig_approval_heat, use_container_width=True)
+            st.caption("🔴 <70% 🟡 70-85% 🟢 >85% — кольорова шкала неперервна, орієнтир — ті самі пороги.")
 
     st.divider()
 
@@ -1454,5 +1762,175 @@ with tab4:
 
     st.subheader("📈 Співвідношення пік / середнє")
     st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—", "У скільки разів максимальне денне значення перевищує середнє"), unsafe_allow_html=True)
+
+
+# ============================================================
+# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ
+# ============================================================
+with tab5:
+    st.subheader("🆚 Порівняння двох довільних періодів")
+    st.caption("Незалежно від фільтрів у сайдбарі — оберіть два будь-які діапазони дат для порівняння.")
+
+    cmp_op_mode = st.radio(
+        "Операції для порівняння",
+        options=["Тотал", "Вибрані операції"],
+        index=0,
+        horizontal=True,
+        key="cmp_op_mode",
+    )
+    if cmp_op_mode == "Тотал":
+        cmp_ops = ["Тотал"]
+    else:
+        cmp_ops = st.multiselect(
+            "Операції",
+            options=all_ops,
+            default=all_ops,
+            key="cmp_ops_select",
+        )
+        if not cmp_ops:
+            st.warning("Виберіть хоча б одну операцію.")
+            cmp_ops = ["Тотал"]
+            cmp_op_mode = "Тотал"
+
+    col_a, col_b = st.columns(2)
+    default_end_b = max_date.date()
+    default_start_b = max(min_date, max_date - pd.Timedelta(days=13)).date()
+    default_end_a = (max(min_date, max_date - pd.Timedelta(days=14))).date()
+    default_start_a = max(min_date, max_date - pd.Timedelta(days=27)).date()
+
+    with col_a:
+        st.markdown("**Період A**")
+        range_a_input = st.date_input(
+            "Діапазон A",
+            value=(default_start_a, default_end_a),
+            min_value=min_date.date(),
+            max_value=max_date.date(),
+            key="cmp_range_a",
+        )
+    with col_b:
+        st.markdown("**Період B**")
+        range_b_input = st.date_input(
+            "Діапазон B",
+            value=(default_start_b, default_end_b),
+            min_value=min_date.date(),
+            max_value=max_date.date(),
+            key="cmp_range_b",
+        )
+
+    def _normalize_range(range_input):
+        if isinstance(range_input, tuple) and len(range_input) == 2:
+            start, end = pd.Timestamp(range_input[0]), pd.Timestamp(range_input[1])
+        else:
+            single = range_input[0] if isinstance(range_input, tuple) else range_input
+            start = end = pd.Timestamp(single)
+        if start > end:
+            start, end = end, start
+        return start, end
+
+    range_a_valid = isinstance(range_a_input, tuple) and len(range_a_input) == 2
+    range_b_valid = isinstance(range_b_input, tuple) and len(range_b_input) == 2
+
+    if not range_a_valid or not range_b_valid:
+        st.info("Оберіть повний діапазон (початкову і кінцеву дату) для обох періодів.")
+    else:
+        range_a = _normalize_range(range_a_input)
+        range_b = _normalize_range(range_b_input)
+
+        def build_period_metrics(date_range, ops):
+            start, end = date_range
+            mask = (df["date"] >= start) & (df["date"] <= end) & (df["operation"].isin(ops))
+            scoped = df[mask]
+            scoped_stats = with_data(scoped)
+            if scoped_stats.empty:
+                return None
+            daily = scoped_stats.groupby("date")["value"].sum()
+            total = daily.sum()
+            avg = daily.mean()
+            peak = daily.max()
+            tf = scoped[["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
+            s_true = tf["sum_true"].sum()
+            s_false = tf["sum_false"].sum()
+            rate = (s_true / (s_true + s_false) * 100) if (s_true + s_false) > 0 else None
+            return {
+                "total": total,
+                "avg": avg,
+                "peak": peak,
+                "rate": rate,
+                "days": (end - start).days + 1,
+            }
+
+        metrics_a = build_period_metrics(range_a, cmp_ops)
+        metrics_b = build_period_metrics(range_b, cmp_ops)
+
+        if metrics_a is None or metrics_b is None:
+            st.warning("Немає даних (з внесеними значеннями) для одного з обраних періодів.")
+        else:
+            def _fmt_delta_pct(a_val, b_val):
+                if a_val is None or b_val is None or a_val == 0:
+                    return "—"
+                return f"{(b_val - a_val) / a_val * 100:+.1f}%"
+
+            rows = [
+                {
+                    "Метрика": "Період (днів)",
+                    "A": metrics_a["days"],
+                    "B": metrics_b["days"],
+                    "Δ": metrics_b["days"] - metrics_a["days"],
+                    "Δ %": "—",
+                },
+                {
+                    "Метрика": "Всього операцій",
+                    "A": f"{metrics_a['total']:,.0f}",
+                    "B": f"{metrics_b['total']:,.0f}",
+                    "Δ": f"{metrics_b['total'] - metrics_a['total']:+,.0f}",
+                    "Δ %": _fmt_delta_pct(metrics_a["total"], metrics_b["total"]),
+                },
+                {
+                    "Метрика": "Середнє за день",
+                    "A": f"{metrics_a['avg']:.1f}",
+                    "B": f"{metrics_b['avg']:.1f}",
+                    "Δ": f"{metrics_b['avg'] - metrics_a['avg']:+.1f}",
+                    "Δ %": _fmt_delta_pct(metrics_a["avg"], metrics_b["avg"]),
+                },
+                {
+                    "Метрика": "Пік за день",
+                    "A": f"{metrics_a['peak']:,.0f}",
+                    "B": f"{metrics_b['peak']:,.0f}",
+                    "Δ": f"{metrics_b['peak'] - metrics_a['peak']:+,.0f}",
+                    "Δ %": _fmt_delta_pct(metrics_a["peak"], metrics_b["peak"]),
+                },
+                {
+                    "Метрика": "Коефіцієнт погоджень, %",
+                    "A": f"{metrics_a['rate']:.1f}%" if metrics_a["rate"] is not None else "—",
+                    "B": f"{metrics_b['rate']:.1f}%" if metrics_b["rate"] is not None else "—",
+                    "Δ": (
+                        f"{metrics_b['rate'] - metrics_a['rate']:+.1f} п.п."
+                        if metrics_a["rate"] is not None and metrics_b["rate"] is not None
+                        else "—"
+                    ),
+                    "Δ %": "—",
+                },
+            ]
+
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            chart_metrics = pd.DataFrame({
+                "Метрика": ["Всього", "Середнє за день", "Пік"],
+                "A": [metrics_a["total"], metrics_a["avg"], metrics_a["peak"]],
+                "B": [metrics_b["total"], metrics_b["avg"], metrics_b["peak"]],
+            }).melt(id_vars="Метрика", var_name="Період", value_name="Значення")
+
+            fig_cmp = px.bar(
+                chart_metrics,
+                x="Метрика",
+                y="Значення",
+                color="Період",
+                barmode="group",
+                labels={"Значення": "Кількість"},
+                title=f"A: {range_a[0].strftime('%d.%m.%Y')}–{range_a[1].strftime('%d.%m.%Y')}  vs  "
+                      f"B: {range_b[0].strftime('%d.%m.%Y')}–{range_b[1].strftime('%d.%m.%Y')}",
+            )
+            fig_cmp.update_layout(height=380, margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fig_cmp, use_container_width=True)
 
 st.caption("Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці • Час: Europe/Kyiv.")
