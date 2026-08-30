@@ -1,6 +1,7 @@
+import html
 import re
 from datetime import datetime
-from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import gspread
 import numpy as np
@@ -19,6 +20,8 @@ st.set_page_config(
 
 SPREADSHEET_ID = "1STX1vgDAk3zVDshXdZmTgJJSvQNCN4WmmftOskwymYI"
 SHEETS = ["24", "25", "26"]
+
+KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 MONTHS = {
     "Січень": 1,
@@ -51,9 +54,38 @@ ALIASES = {
     "Зміна дати активації ": "Зміна дати активації",
 }
 
+WEEKDAY_UA = {
+    "Monday": "Пн", "Tuesday": "Вт", "Wednesday": "Ср",
+    "Thursday": "Чт", "Friday": "Пт", "Saturday": "Сб", "Sunday": "Нд",
+}
+WEEKDAY_ORDER_UA = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
+
+TOTAL_ROW_SEARCH_RANGE = 10
+DETAIL_SEARCH_RANGE = 30
+FIRST_DAY_COLUMN = 4
+
+
+def now_kyiv() -> pd.Timestamp:
+    """Поточний час у Києві, як naive Timestamp (сумісний з датами в df)."""
+    return pd.Timestamp.now(tz=KYIV_TZ).replace(tzinfo=None).normalize()
+
+
+def now_kyiv_exact() -> pd.Timestamp:
+    """Поточний момент у Києві без нормалізації до півночі."""
+    return pd.Timestamp.now(tz=KYIV_TZ).replace(tzinfo=None)
+
+
+def is_empty_cell(value) -> bool:
+    """Клітинка вважається порожньою (даних ще не внесли), а не фактичним нулем."""
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return False
+    return str(value).strip() == ""
+
 
 def as_number(value):
-    if value is None or value == "" or isinstance(value, bool):
+    if is_empty_cell(value):
         return 0.0
     val_str = str(value).replace("\xa0", "").replace(" ", "").replace(",", ".")
     val_str = re.sub(r"[^\d.-]", "", val_str)
@@ -85,13 +117,14 @@ def get_client():
     return gspread.authorize(credentials)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner="Завантаження даних з Google Таблиці…")
 def load_data():
     client = get_client()
     spreadsheet = client.open_by_key(SPREADSHEET_ID)
 
     records = []
     op_true_false = []
+    warnings = []
 
     for sheet_name in SHEETS:
         worksheet = spreadsheet.worksheet(sheet_name)
@@ -108,12 +141,13 @@ def load_data():
             if parsed:
                 month_rows.append((idx, parsed[0], parsed[1]))
 
-        for month_idx, (header_row, month, year) in enumerate(month_rows):
+        for header_row, month, year in month_rows:
             month_key = f"{year}-{month:02d}"
+            month_label = f"{month:02d}.{year}"
 
             # --- Зчитуємо рядок "Тотал" (колонки B і C) ---
             total_row_idx = None
-            for r in range(header_row + 1, min(header_row + 10, len(values))):
+            for r in range(header_row + 1, min(header_row + TOTAL_ROW_SEARCH_RANGE, len(values))):
                 if len(values[r]) > 0 and values[r][0] == "Тотал":
                     total_row_idx = r
                     break
@@ -126,15 +160,24 @@ def load_data():
                     "sum_true": sum_true,
                     "sum_false": sum_false
                 })
+            else:
+                warnings.append(
+                    f"⚠️ Аркуш «{sheet_name}», {month_label}: не знайдено рядок «Тотал» "
+                    f"(перевірте структуру таблиці)."
+                )
 
             # --- Зчитуємо деталізовані дані ---
             detail_start = None
-            for r in range(header_row + 1, min(header_row + 30, len(values))):
-                if len(values[r]) > 3 and values[r][3] in OPERATIONS:
+            for r in range(header_row + 1, min(header_row + DETAIL_SEARCH_RANGE, len(values))):
+                if len(values[r]) > 3 and values[r][3].strip() in OPERATIONS:
                     detail_start = r
                     break
 
             if detail_start is None:
+                warnings.append(
+                    f"⚠️ Аркуш «{sheet_name}», {month_label}: не знайдено таблицю деталізації "
+                    f"операцій — місяць пропущено."
+                )
                 continue
 
             days = pd.Period(f"{year}-{month:02d}").days_in_month
@@ -143,7 +186,8 @@ def load_data():
                 if r >= len(values):
                     break
 
-                operation = values[r][3] if len(values[r]) > 3 else ""
+                raw_operation = values[r][3] if len(values[r]) > 3 else ""
+                operation = raw_operation.strip()
                 operation = ALIASES.get(operation, operation)
 
                 if operation not in OPERATIONS:
@@ -160,15 +204,16 @@ def load_data():
 
                 row = values[r]
                 for day_idx in range(days):
-                    col = 4 + day_idx
-                    value = row[col] if col < len(row) else ""
+                    col = FIRST_DAY_COLUMN + day_idx
+                    raw_value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
                     records.append(
                         {
                             "date": date,
                             "operation": operation,
-                            "value": as_number(value),
+                            "value": as_number(raw_value),
+                            "has_data": not is_empty_cell(raw_value),
                             "year": year,
                             "month": date.strftime("%Y-%m"),
                             "month_name": date.strftime("%b %Y"),
@@ -185,16 +230,16 @@ def load_data():
     date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend"]].drop_duplicates("date")
 
     df_grouped = (
-        df_raw.groupby(["date", "operation"], as_index=False)["value"]
-        .sum()
+        df_raw.groupby(["date", "operation"], as_index=False)
+        .agg(value=("value", "sum"), has_data=("has_data", "any"))
         .sort_values(["date", "operation"])
     )
 
     df = df_grouped.merge(date_metadata, on="date", how="left")
 
     total = (
-        df.groupby("date", as_index=False)["value"]
-        .sum()
+        df.groupby("date", as_index=False)
+        .agg(value=("value", "sum"), has_data=("has_data", "any"))
         .assign(operation="Тотал")
     )
     total = total.merge(date_metadata, on="date", how="left")
@@ -205,11 +250,18 @@ def load_data():
     df["sum_true"] = df["sum_true"].fillna(0)
     df["sum_false"] = df["sum_false"].fillna(0)
 
-    return df
+    return df, warnings
+
+
+def with_data(df):
+    """Повертає лише рядки, де дані фактично внесені (виключає порожні клітинки)."""
+    if "has_data" not in df.columns:
+        return df
+    return df[df["has_data"]]
 
 
 def calc_peak_min_avg(df):
-    daily = df.groupby("date")["value"].sum()
+    daily = with_data(df).groupby("date")["value"].sum()
     if daily.empty:
         return 0, 0, 0, 0
     peak = daily.max()
@@ -220,6 +272,7 @@ def calc_peak_min_avg(df):
 
 
 def calc_busiest_weekday(df):
+    df = with_data(df)
     if df.empty:
         return None, None
     daily = df.groupby("date")["value"].sum().reset_index()
@@ -233,7 +286,7 @@ def calc_busiest_weekday(df):
 def calc_busiest_operation(df):
     if df.empty or df["operation"].nunique() == 0:
         return None, None
-    ops = df[df["operation"] != "Тотал"]
+    ops = with_data(df[df["operation"] != "Тотал"])
     if ops.empty:
         return None, None
     total_by_op = ops.groupby("operation")["value"].sum()
@@ -243,7 +296,7 @@ def calc_busiest_operation(df):
 
 
 def calc_stability(df, daily_avg):
-    daily = df.groupby("date")["value"].sum()
+    daily = with_data(df).groupby("date")["value"].sum()
     if daily.empty:
         return 0, 0, "Немає даних"
     std = daily.std()
@@ -258,6 +311,7 @@ def calc_stability(df, daily_avg):
 
 
 def detect_anomalies(df, window=14, threshold=1.5):
+    df = with_data(df)
     if df.empty:
         return pd.DataFrame()
     daily = df.groupby("date")["value"].sum().reset_index()
@@ -294,8 +348,8 @@ def forecast_scenarios(df, current_month):
     if df.empty or current_month not in df["month"].values:
         return None, None
 
-    month_data = df[df["month"] == current_month]
-    today = pd.Timestamp.now().normalize()
+    month_data = with_data(df[df["month"] == current_month])
+    today = now_kyiv()
     days_passed = (today - pd.Timestamp(year=today.year, month=today.month, day=1)).days + 1
 
     if today.month != pd.Period(current_month).month or today.year != pd.Period(current_month).year:
@@ -334,7 +388,7 @@ def forecast_scenarios(df, current_month):
     prev_period_str = str(prev_period)
 
     if prev_period_str in df["month"].unique():
-        prev_data = df[df["month"] == prev_period_str]
+        prev_data = with_data(df[df["month"] == prev_period_str])
         prev_fact = prev_data[prev_data["date"].dt.day <= days_passed]
         prev_remaining = prev_data[prev_data["date"].dt.day > days_passed]
 
@@ -372,10 +426,10 @@ def forecast_scenarios(df, current_month):
 # --- Завантаження та фільтри ---
 
 st.title("📊 Dashboard погоджень КПО")
-st.caption("Дані завантажуються напряму з Google Таблиці. Кеш оновлюється кожні 5 хвилин.")
+st.caption("Дані завантажуються напряму з Google Таблиці. Кеш оновлюється кожні 5 хвилин. Час — за Києвом.")
 
 try:
-    df = load_data()
+    df, load_warnings = load_data()
 except Exception as exc:
     st.error("Не вдалося завантажити Google Таблицю.")
     st.code(str(exc))
@@ -386,10 +440,15 @@ except Exception as exc:
     )
     st.stop()
 
+if load_warnings:
+    with st.expander(f"⚠️ Попередження при завантаженні даних ({len(load_warnings)})", expanded=False):
+        for w in load_warnings:
+            st.warning(w)
+
 st.sidebar.header("Фільтри")
 
 years = sorted(df["year"].unique())
-current_year = datetime.now().year
+current_year = now_kyiv().year
 if current_year in years:
     default_years = [current_year]
 else:
@@ -408,7 +467,7 @@ available_months = (
     .tolist()
 )
 
-current_month_str = datetime.now().strftime("%Y-%m")
+current_month_str = now_kyiv().strftime("%Y-%m")
 if current_month_str in available_months:
     default_months = [current_month_str]
 else:
@@ -469,7 +528,7 @@ if filtered.empty:
     st.stop()
 
 # --- Обробка поточного незавершеного місяця ---
-today = pd.Timestamp.now().normalize()
+today = now_kyiv()
 if len(selected_months) == 1:
     period = pd.Period(selected_months[0])
     if period.start_time <= today <= period.end_time:
@@ -484,21 +543,28 @@ if filtered.empty:
     st.warning("За вибраними фільтрами даних немає (можливо, ще немає даних за цей місяць).")
     st.stop()
 
-# --- Розрахунок базових метрик ---
-daily_total = filtered.groupby("date")["value"].sum()
-total_value = daily_total.sum()
-daily_avg = total_value / num_days if num_days > 0 else 0
+# Дані з фактично внесеними значеннями (без порожніх клітинок) — для статистики
+filtered_stats = with_data(filtered)
+if filtered_stats.empty:
+    st.info("Дані ще не внесені для жодного дня у вибраному періоді — статистика недоступна, показано лише графіки.")
 
-weekday_mask = filtered["is_weekend"] == False
-weekend_mask = filtered["is_weekend"] == True
+# --- Розрахунок базових метрик (тільки по днях з реальними даними) ---
+daily_total = filtered_stats.groupby("date")["value"].sum()
+total_value = daily_total.sum()
+# "Всього" за період враховує ВСІ дні (в т.ч. невнесені = 0), а середнє за день —
+# тільки фактичні дні, щоб порожні клітинки не занижували показник штучно
+daily_avg = daily_total.mean() if not daily_total.empty else 0
+
+weekday_mask = filtered_stats["is_weekend"] == False
+weekend_mask = filtered_stats["is_weekend"] == True
 
 if weekday_mask.any():
-    daily_avg_weekday = filtered[weekday_mask].groupby("date")["value"].sum().mean()
+    daily_avg_weekday = filtered_stats[weekday_mask].groupby("date")["value"].sum().mean()
 else:
     daily_avg_weekday = None
 
 if weekend_mask.any():
-    daily_avg_weekend = filtered[weekend_mask].groupby("date")["value"].sum().mean()
+    daily_avg_weekend = filtered_stats[weekend_mask].groupby("date")["value"].sum().mean()
 else:
     daily_avg_weekend = None
 
@@ -531,26 +597,26 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
 comparison_parts = []
 if len(selected_months) == 1 and operation_mode == "Тотал":
     current_period = pd.Period(selected_months[0])
-    today_comp = pd.Timestamp.now().normalize()
+    today_comp = now_kyiv()
 
     prev_period = current_period - 1
     if current_period.end_time <= today_comp:
         cur_sum = daily_total.sum()
-        prev_sum = df[
+        prev_sum = with_data(df[
             (df["month"] == str(prev_period))
             & (df["operation"] == "Тотал")
-        ]["value"].sum()
+        ])["value"].sum()
         delta_prev = ((cur_sum - prev_sum) / prev_sum * 100) if prev_sum > 0 else None
     else:
         day_limit = today_comp.day
-        cur_sum = filtered[filtered["date"].dt.day <= day_limit]["value"].sum()
+        cur_sum = filtered_stats[filtered_stats["date"].dt.day <= day_limit]["value"].sum()
         days_in_prev = prev_period.days_in_month
         day_limit_prev = min(day_limit, days_in_prev)
-        prev_sum = df[
+        prev_sum = with_data(df[
             (df["month"] == str(prev_period))
             & (df["operation"] == "Тотал")
             & (df["date"].dt.day <= day_limit_prev)
-        ]["value"].sum()
+        ])["value"].sum()
         delta_prev = ((cur_sum - prev_sum) / prev_sum * 100) if prev_sum > 0 else None
 
     if delta_prev is not None:
@@ -567,21 +633,21 @@ if len(selected_months) == 1 and operation_mode == "Тотал":
     if has_prev_year:
         if current_period.end_time <= today_comp:
             cur_sum = daily_total.sum()
-            prev_year_sum = df[
+            prev_year_sum = with_data(df[
                 (df["month"] == str(prev_year_period))
                 & (df["operation"] == "Тотал")
-            ]["value"].sum()
+            ])["value"].sum()
             delta_year = ((cur_sum - prev_year_sum) / prev_year_sum * 100) if prev_year_sum > 0 else None
         else:
             day_limit = today_comp.day
-            cur_sum = filtered[filtered["date"].dt.day <= day_limit]["value"].sum()
+            cur_sum = filtered_stats[filtered_stats["date"].dt.day <= day_limit]["value"].sum()
             days_in_prev_year = prev_year_period.days_in_month
             day_limit_prev_year = min(day_limit, days_in_prev_year)
-            prev_year_sum = df[
+            prev_year_sum = with_data(df[
                 (df["month"] == str(prev_year_period))
                 & (df["operation"] == "Тотал")
                 & (df["date"].dt.day <= day_limit_prev_year)
-            ]["value"].sum()
+            ])["value"].sum()
             delta_year = ((cur_sum - prev_year_sum) / prev_year_sum * 100) if prev_year_sum > 0 else None
         if delta_year is not None:
             comparison_parts.append(f"Мин. рік: {delta_year:+.1f}%")
@@ -590,11 +656,18 @@ comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
 
 def custom_metric(label, value, help_text=None):
-    help_icon = f'<span class="help-icon" title="{help_text}">?</span>' if help_text else ""
+    """Рендерить метрику як HTML. Усі значення екрануються (html.escape),
+    щоб дані з Google Таблиці не могли інʼєктувати довільний HTML/JS."""
+    safe_label = html.escape(str(label))
+    safe_value = html.escape(str(value))
+    help_icon = ""
+    if help_text:
+        safe_help = html.escape(str(help_text))
+        help_icon = f'<span class="help-icon" title="{safe_help}">?</span>'
     return f"""
     <div class="metric-container">
-        <div class="metric-label">{label} {help_icon}</div>
-        <div class="metric-value">{value}</div>
+        <div class="metric-label">{safe_label} {help_icon}</div>
+        <div class="metric-value">{safe_value}</div>
     </div>
     """
 
@@ -663,21 +736,21 @@ with tab1:
     col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
-        st.markdown(custom_metric("Всього", f"{total_value:,.0f}", "Загальна кількість операцій за вибраний період"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Всього", f"{total_value:,.0f}", "Загальна кількість операцій за вибраний період (включно з календарними днями без внесених даних)"), unsafe_allow_html=True)
 
     with col2:
-        st.markdown(custom_metric("Середнє за день", f"{daily_avg:.0f}", f"Сумарна кількість поділена на {num_days} календарних днів у вибраному періоді"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Середнє за день", f"{daily_avg:.0f}", "Сумарна кількість поділена на кількість днів, за які реально внесені дані (порожні клітинки не враховуються як нулі)"), unsafe_allow_html=True)
 
     with col3:
         avg_weekday_str = f"{daily_avg_weekday:.0f}" if daily_avg_weekday is not None and not pd.isna(daily_avg_weekday) else "—"
-        st.markdown(custom_metric("Середнє за будні", avg_weekday_str, "Середня кількість операцій у будні (лише фактичні дні)"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Середнє за будні", avg_weekday_str, "Середня кількість операцій у будні (лише дні з внесеними даними)"), unsafe_allow_html=True)
 
     with col4:
         avg_weekend_str = f"{daily_avg_weekend:.0f}" if daily_avg_weekend is not None and not pd.isna(daily_avg_weekend) else "—"
-        st.markdown(custom_metric("Середнє за вихідні", avg_weekend_str, "Середня кількість операцій у вихідні (лише фактичні дні)"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Середнє за вихідні", avg_weekend_str, "Середня кількість операцій у вихідні (лише дні з внесеними даними)"), unsafe_allow_html=True)
 
     with col5:
-        st.markdown(custom_metric("Пік за день", f"{peak:,.0f}", "Найбільша кількість операцій за один день (лише фактичні дні)"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Пік за день", f"{peak:,.0f}", "Найбільша кількість операцій за один день (лише дні з внесеними даними)"), unsafe_allow_html=True)
 
     with col6:
         st.markdown(custom_metric("Коефіцієнт погоджень", approval_rate_str, "Доступно лише в режимі 'Тотал' (частка погоджень від загальної кількості)"), unsafe_allow_html=True)
@@ -688,17 +761,13 @@ with tab1:
         st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×", "У скільки разів пік перевищує середнє"), unsafe_allow_html=True)
 
     with col8:
-        st.markdown(custom_metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—", "Коефіцієнт варіації (лише фактичні дні)"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—", "Коефіцієнт варіації (лише дні з внесеними даними)"), unsafe_allow_html=True)
 
     with col9:
         if busiest_weekday:
-            days_ua = {
-                "Monday": "Пн", "Tuesday": "Вт", "Wednesday": "Ср",
-                "Thursday": "Чт", "Friday": "Пт", "Saturday": "Сб", "Sunday": "Нд"
-            }
-            day_ua = days_ua.get(busiest_weekday, busiest_weekday)
+            day_ua = WEEKDAY_UA.get(busiest_weekday, busiest_weekday)
             val = f"{day_ua} — {busiest_weekday_val:.0f}/день"
-            help_txt = "День тижня з найвищим середнім навантаженням (лише фактичні дні)"
+            help_txt = "День тижня з найвищим середнім навантаженням (лише дні з внесеними даними)"
         else:
             val = "—"
             help_txt = None
@@ -721,7 +790,7 @@ with tab1:
                 parts = comparison_text.split("  ")
                 for part in parts:
                     st.markdown(
-                        f"<p class='comparison-text'>{part}</p>",
+                        f"<p class='comparison-text'>{html.escape(part)}</p>",
                         unsafe_allow_html=True
                     )
             else:
@@ -882,7 +951,7 @@ with tab2:
 
     if operation_mode == "Тотал":
         st.subheader("📊 Порівняння по роках (YoY)")
-        yoy_data = df[df["operation"] == "Тотал"].copy()
+        yoy_data = with_data(df[df["operation"] == "Тотал"]).copy()
         yoy_data = yoy_data[yoy_data["year"].isin(selected_years)]
         yoy_monthly = yoy_data.groupby(["year", "month"])["value"].sum().reset_index()
         yoy_monthly["month_num"] = yoy_monthly["month"].apply(lambda x: pd.Period(x).month)
@@ -965,7 +1034,7 @@ with tab2:
 with tab3:
     st.subheader("🧩 Аналіз операцій")
 
-    ops_data = filtered[filtered["operation"] != "Тотал"]
+    ops_data = with_data(filtered[filtered["operation"] != "Тотал"])
     if ops_data.empty:
         st.info("Немає даних про окремі операції для вибраного періоду.")
     else:
@@ -1064,13 +1133,9 @@ with tab4:
     st.subheader("📅 Аналіз навантаження")
 
     st.subheader("📊 Середнє навантаження за днями тижня")
-    daily_sum = filtered.groupby("date")["value"].sum().reset_index()
-    daily_sum["weekday_ua"] = daily_sum["date"].dt.day_name().map({
-        "Monday": "Пн", "Tuesday": "Вт", "Wednesday": "Ср",
-        "Thursday": "Чт", "Friday": "Пт", "Saturday": "Сб", "Sunday": "Нд"
-    })
-    order = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
-    weekday_avg = daily_sum.groupby("weekday_ua")["value"].mean().reindex(order).reset_index()
+    daily_sum = filtered_stats.groupby("date")["value"].sum().reset_index()
+    daily_sum["weekday_ua"] = daily_sum["date"].dt.day_name().map(WEEKDAY_UA)
+    weekday_avg = daily_sum.groupby("weekday_ua")["value"].mean().reindex(WEEKDAY_ORDER_UA).reset_index()
     weekday_avg.columns = ["weekday", "avg_value"]
     weekday_avg["avg_value"] = weekday_avg["avg_value"].fillna(0)
 
@@ -1080,7 +1145,7 @@ with tab4:
         y="avg_value",
         text=weekday_avg["avg_value"].round(1).astype(str),
         labels={"weekday": "День тижня", "avg_value": "Середня кількість"},
-        title="Середня кількість операцій по днях тижня"
+        title="Середня кількість операцій по днях тижня (лише дні з внесеними даними)"
     )
     fig_weekday_avg.update_traces(textposition="outside")
     fig_weekday_avg.update_layout(height=360, margin=dict(l=10, r=10, t=20, b=10))
@@ -1115,16 +1180,12 @@ with tab4:
     st.plotly_chart(fig_week, use_container_width=True)
 
     st.subheader("🌡️ Теплова карта навантаження")
-    daily_heat = filtered.groupby("date")["value"].sum().reset_index()
+    daily_heat = filtered_stats.groupby("date")["value"].sum().reset_index()
     daily_heat["month_label"] = daily_heat["date"].dt.strftime("%m.%Y")
-    daily_heat["weekday_ua"] = daily_heat["date"].dt.day_name().map({
-        "Monday": "Пн", "Tuesday": "Вт", "Wednesday": "Ср",
-        "Thursday": "Чт", "Friday": "Пт", "Saturday": "Сб", "Sunday": "Нд"
-    })
+    daily_heat["weekday_ua"] = daily_heat["date"].dt.day_name().map(WEEKDAY_UA)
     heat_data = daily_heat.groupby(["month_label", "weekday_ua"])["value"].mean().reset_index()
     heat_pivot = heat_data.pivot(index="month_label", columns="weekday_ua", values="value").fillna(0)
-    order = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
-    heat_pivot = heat_pivot.reindex(columns=order)
+    heat_pivot = heat_pivot.reindex(columns=WEEKDAY_ORDER_UA)
     def sort_months(month_str):
         try:
             return datetime.strptime(month_str, "%m.%Y")
@@ -1146,17 +1207,20 @@ with tab4:
     st.subheader("📊 Стабільність навантаження")
     col1, col2, col3 = st.columns(3)
     col1.markdown(custom_metric("Середнє за день", f"{daily_avg:.0f}" if daily_avg > 0 else "—", "Розраховано за тим самим принципом, що й в Overview"), unsafe_allow_html=True)
-    col2.markdown(custom_metric("Стандартне відхилення", f"{std:.1f}" if std > 0 else "—", "Стандартне відхилення денних сум (лише фактичні дні)"), unsafe_allow_html=True)
+    col2.markdown(custom_metric("Стандартне відхилення", f"{std:.1f}" if std > 0 else "—", "Стандартне відхилення денних сум (лише дні з внесеними даними)"), unsafe_allow_html=True)
     col3.markdown(custom_metric("Коефіцієнт варіації (CV)", f"{cv:.1f}%" if cv > 0 else "—", "CV = (стандартне відхилення / середнє) × 100%"), unsafe_allow_html=True)
 
     st.subheader("📊 Розподіл відхилень від середнього (крива щільності)")
 
-    daily_totals = filtered.groupby("date")["value"].sum().reset_index()
+    daily_totals = filtered_stats.groupby("date")["value"].sum().reset_index()
     daily_totals["is_weekend"] = daily_totals["date"].dt.dayofweek >= 5
 
     median_all = None
     median_wd = None
     median_we = None
+    mean_all = None
+    mean_weekday = None
+    mean_weekend = None
 
     if daily_totals.empty or len(daily_totals) < 3:
         st.info("Недостатньо даних для побудови графіка розподілу.")
@@ -1282,15 +1346,17 @@ with tab4:
     median_we_str = f"{median_we:.1f}" if median_we is not None else "—"
 
     stats = []
-    stats.append(f"**Всі дні:** середнє = {mean_all:.1f}, медіана = {median_all_str}, CV = {cv:.1f}%")
+    if mean_all is not None:
+        stats.append(f"**Всі дні:** середнє = {mean_all:.1f}, медіана = {median_all_str}, CV = {cv:.1f}%")
     if mean_weekday is not None:
         stats.append(f"**Будні:** середнє = {mean_weekday:.1f}, медіана = {median_wd_str}")
     if mean_weekend is not None:
         stats.append(f"**Вихідні:** середнє = {mean_weekend:.1f}, медіана = {median_we_str}")
 
-    st.markdown(" ".join(stats), unsafe_allow_html=True)
+    if stats:
+        st.markdown(" ".join(stats), unsafe_allow_html=True)
 
     st.subheader("📈 Співвідношення пік / середнє")
     st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—", "У скільки разів максимальне денне значення перевищує середнє"), unsafe_allow_html=True)
 
-st.caption("Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці.")
+st.caption("Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці • Час: Europe/Kyiv.")
