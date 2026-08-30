@@ -1530,13 +1530,18 @@ with tab3:
                 zmin=0,
                 zmax=100,
             )
-            # Динамічна висота теплової карти залежно від кількості місяців.
-            # Це запобігає накладанню рядків при виборі кількох років.
-            heatmap_height = max(420, min(1200, len(heat_rate_pivot.index) * 34))
+            # FIX: Динамічна висота з великим запасом та авто-зменшення шрифту
+            row_height = 38
+            min_height = 420
+            max_height = 2400
+            heatmap_height = max(min_height, min(max_height, len(heat_rate_pivot.index) * row_height))
             fig_approval_heat.update_layout(
                 height=heatmap_height,
                 margin=dict(l=10, r=10, t=20, b=10),
             )
+            font_size = 12 if len(heat_rate_pivot.index) <= 12 else (10 if len(heat_rate_pivot.index) <= 24 else 8)
+            fig_approval_heat.update_traces(textfont=dict(size=font_size))
+
             st.plotly_chart(fig_approval_heat, use_container_width=True)
             st.caption("🔴 <70% 🟡 70-85% 🟢 >85% — кольорова шкала неперервна, орієнтир — ті самі пороги.")
 
@@ -1694,13 +1699,21 @@ with tab4:
     heat_data = daily_heat.groupby(["month_label", "weekday_ua"])["value"].mean().reset_index()
     heat_pivot = heat_data.pivot(index="month_label", columns="weekday_ua", values="value").fillna(0)
     heat_pivot = heat_pivot.reindex(columns=WEEKDAY_ORDER_UA)
+
     def sort_months(month_str):
         try:
             return datetime.strptime(month_str, "%m.%Y")
         except Exception:
             return datetime(1900, 1, 1)
+
     sorted_months = sorted(heat_pivot.index, key=sort_months)
     heat_pivot = heat_pivot.reindex(sorted_months)
+
+    # FIX: Динамічна висота, авто-зменшення шрифту та контейнер з прокруткою
+    row_height = 38
+    min_height = 420
+    max_height = 2400
+    heatmap_height = max(min_height, min(max_height, len(heat_pivot.index) * row_height))
 
     fig_heatmap = px.imshow(
         heat_pivot,
@@ -1709,8 +1722,16 @@ with tab4:
         labels=dict(x="День тижня", y="Місяць", color="Середня кількість"),
         color_continuous_scale=KPO_HEAT_SCALE,
     )
-    fig_heatmap.update_layout(height=450, margin=dict(l=10, r=10, t=20, b=10))
+    fig_heatmap.update_layout(
+        height=heatmap_height,
+        margin=dict(l=10, r=10, t=20, b=10),
+    )
+    font_size = 12 if len(heat_pivot.index) <= 12 else (10 if len(heat_pivot.index) <= 24 else 8)
+    fig_heatmap.update_traces(textfont=dict(size=font_size))
+
+    st.markdown('<div style="overflow-x: auto; max-height: 90vh; position: relative;">', unsafe_allow_html=True)
     st.plotly_chart(fig_heatmap, use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
     st.subheader("📊 Стабільність навантаження")
     col1, col2, col3 = st.columns(3)
