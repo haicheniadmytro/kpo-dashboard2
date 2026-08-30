@@ -1495,9 +1495,8 @@ with tab3:
             )
 
     st.subheader("🌡️ Теплова карта коефіцієнта погоджень (Операція × Місяць)")
-    tf_heat = df[period_mask & (df["operation"] != "Тотал")][
-        ["month", "operation", "sum_true", "sum_false"]
-    ].drop_duplicates()
+    # FIX: Додаємо "Тотал" до теплової карти
+    tf_heat = df[period_mask][["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
 
     if tf_heat.empty:
         st.info("Немає TRUE/FALSE даних для побудови теплової карти у вибраному періоді.")
@@ -1511,6 +1510,13 @@ with tab3:
             tf_heat["rate"] = tf_heat["sum_true"] / tf_heat["total"] * 100
             tf_heat["month_label"] = tf_heat["month"].apply(lambda x: pd.Period(x).strftime("%m.%Y"))
             heat_rate_pivot = tf_heat.pivot_table(index="month_label", columns="operation", values="rate", aggfunc="mean")
+
+            # FIX: Переставляємо колонки, щоб "Тотал" була першою зліва
+            cols = heat_rate_pivot.columns.tolist()
+            if "Тотал" in cols:
+                cols.remove("Тотал")
+                cols = ["Тотал"] + cols
+                heat_rate_pivot = heat_rate_pivot[cols]
 
             def _sort_month_label(month_str):
                 try:
@@ -1530,7 +1536,7 @@ with tab3:
                 zmin=0,
                 zmax=100,
             )
-            # FIX: Динамічна висота з великим запасом та авто-зменшення шрифту
+            # FIX: Динамічна висота та авто-зменшення шрифту
             row_height = 38
             min_height = 420
             max_height = 2400
