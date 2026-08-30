@@ -69,7 +69,7 @@ except KeyError:
     st.stop()
 
 # ============================================================
-# 4. Автоматичне визначення років (FIX 4)
+# 4. Автоматичне визначення років
 # ============================================================
 START_YEAR = 2024
 CURRENT_YEAR = datetime.now().year
@@ -88,7 +88,6 @@ OPERATIONS = [
     "Переоформлення", "Закриття контракта", "Со-доступ", "Зміна дати активації",
 ]
 
-# FIX 5: нормалізація назв операцій
 def normalize_operation(value):
     if not isinstance(value, str):
         return ""
@@ -202,7 +201,6 @@ def load_data():
             month_key = f"{year}-{month:02d}"
             month_label = f"{month:02d}.{year}"
 
-            # Пошук "Тотал" з нормалізацією
             total_row_idx = None
             try:
                 named_range = worksheet.range("Тотал")
@@ -252,7 +250,6 @@ def load_data():
                     f"⚠️ Аркуш «{sheet_name}», {month_label}: не знайдено рядок «Тотал»."
                 )
 
-            # Деталізовані дані
             detail_start = None
             for r in range(header_row + 1, min(header_row + DETAIL_SEARCH_RANGE, len(values))):
                 if len(values[r]) > 3 and normalize_operation(values[r][3]) in OPERATIONS:
@@ -303,7 +300,6 @@ def load_data():
     if df_raw.empty:
         raise ValueError("Не знайдено деталізованих даних у Google Таблиці.")
 
-    # Локалізація часового поясу
     df_raw["date"] = pd.to_datetime(df_raw["date"]).dt.tz_localize(KYIV_TZ)
 
     date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend"]].drop_duplicates("date")
@@ -385,7 +381,6 @@ def calc_stability(df, daily_avg):
         interpretation = "🔴 Висока варіативність (>30%)"
     return std, cv, interpretation
 
-# FIX 3: робастне виявлення аномалій (MAD)
 def detect_anomalies(df, window=14, threshold=3.0):
     df = with_data(df)
     if df.empty:
@@ -431,9 +426,6 @@ def gaussian_kde_np(data, x_grid, bandwidth=None):
     density = kernel.sum(axis=1) / (n * bandwidth * np.sqrt(2 * np.pi))
     return density
 
-# ============================================================
-# 9. Прогноз обсягів (без прогнозу approval rate – FIX 2)
-# ============================================================
 def forecast_scenarios(df, current_month):
     if df.empty or current_month not in df["month"].values:
         return None, None
@@ -513,7 +505,7 @@ def forecast_scenarios(df, current_month):
     return stat_forecast, season_forecast
 
 # ============================================================
-# 10. Основна програма
+# 9. Основна програма
 # ============================================================
 st.title("📊 Dashboard погоджень КПО")
 st.caption("Дані завантажуються напряму з Google Таблиці. Кеш оновлюється кожні 5 хвилин. Час — за Києвом.")
@@ -536,7 +528,7 @@ if load_warnings:
             st.warning(w)
 
 # ============================================================
-# 11. Бокова панель (фільтри)
+# 10. Бокова панель (фільтри)
 # ============================================================
 st.sidebar.header("Фільтри")
 
@@ -606,13 +598,14 @@ if smooth_enabled:
     smooth_window = st.sidebar.selectbox("Вікно згладжування (дні)", [3, 5, 7, 14], index=2)
 
 # ============================================================
-# 12. Фільтрація даних (з виправленням порівняння дат)
+# 11. Фільтрація даних (виправлено порівняння дат)
 # ============================================================
 if operation_mode == "Тотал":
     op_mask = df["operation"] == "Тотал"
 else:
     op_mask = df["operation"].isin(selected_operations)
 
+# --- ВИПРАВЛЕННЯ: приведення дат до naive для порівняння з custom_range ---
 if period_mode == "За місяцями":
     filtered = df[
         df["year"].isin(selected_years)
@@ -620,9 +613,10 @@ if period_mode == "За місяцями":
         & op_mask
     ].copy()
 else:
+    date_naive = df["date"].dt.tz_localize(None)
     filtered = df[
-        (df["date"] >= custom_range[0])
-        & (df["date"] <= custom_range[1])
+        (date_naive >= custom_range[0])
+        & (date_naive <= custom_range[1])
         & op_mask
     ].copy()
 
@@ -631,7 +625,7 @@ if filtered.empty:
     st.stop()
 
 today = now_kyiv()
-# FIX: порівняння дат з урахуванням часового поясу
+# Приводимо filtered["date"] до naive для порівняння з today
 if filtered["date"].dt.tz is not None:
     filtered["date"] = filtered["date"].dt.tz_localize(None)
 
@@ -658,7 +652,7 @@ if filtered_stats.empty:
     st.info("Дані ще не внесені для жодного дня у вибраному періоді — статистика недоступна, показано лише графіки.")
 
 # ============================================================
-# 13. Розрахунок метрик (з урахуванням FIX 1 для довільного діапазону)
+# 12. Розрахунок метрик
 # ============================================================
 daily_total = filtered_stats.groupby("date")["value"].sum()
 total_value = daily_total.sum()
@@ -678,7 +672,7 @@ busiest_weekday, busiest_weekday_val = calc_busiest_weekday(filtered)
 busiest_op, busiest_op_val = calc_busiest_operation(filtered)
 std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
-# --- Коефіцієнт погоджень (FIX 1: тільки для повних місяців у довільному діапазоні) ---
+# --- Коефіцієнт погоджень (FIX 1: тільки для повних місяців) ---
 if period_mode == "За місяцями":
     tf_filtered = filtered[["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
 else:
@@ -710,7 +704,7 @@ else:
     approval_rate_str = "— (немає повних місяців)"
     approval_rate_available = False
 
-# --- Коефіцієнт погоджень по операціях (аналогічно) ---
+# --- Коефіцієнт погоджень по операціях ---
 if period_mode == "За місяцями":
     period_mask = df["year"].isin(selected_years) & df["month"].isin(selected_months)
 else:
@@ -731,7 +725,7 @@ if not tf_by_op_all.empty:
     approval_by_op["approval_rate"] = (approval_by_op["sum_true"] / approval_by_op["total"] * 100).round(1)
     approval_by_op = approval_by_op.sort_values("approval_rate", ascending=False)
 
-# --- Порівняння (без змін) ---
+# --- Порівняння ---
 comparison_parts = []
 if period_mode == "За місяцями" and len(selected_months) == 1 and operation_mode == "Тотал":
     current_period = pd.Period(selected_months[0])
@@ -789,7 +783,7 @@ if period_mode == "За місяцями" and len(selected_months) == 1 and oper
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
 # ============================================================
-# 14. Функція custom_metric та CSS (без змін)
+# 13. Функція custom_metric та CSS
 # ============================================================
 def custom_metric(label, value, help_text=None, color=None):
     safe_label = html.escape(str(label))
@@ -918,7 +912,7 @@ def forecast_cards(title, forecast, help_base=None, help_min=None, help_max=None
         st.markdown(custom_metric(f"{title} (оптимістичний)", f"{forecast['max']:,.0f}", help_max), unsafe_allow_html=True)
 
 # ============================================================
-# 15. Вкладки
+# 14. Вкладки (залишаються без змін, крім Tab 5, де вже виправлено)
 # ============================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "📈 Динаміка", "🧩 Операції", "📅 Навантаження", "🆚 Порівняння періодів"])
 
@@ -1020,7 +1014,7 @@ with tab1:
 
     st.divider()
 
-    # --- Прогнози (без approval rate) ---
+    # --- Прогнози ---
     if period_mode != "За місяцями":
         st.info("📊 Прогнози доступні лише в режимі 'За місяцями' з одним обраним місяцем.")
     elif len(selected_months) != 1:
@@ -1091,7 +1085,7 @@ with tab1:
     st.plotly_chart(fig_overview, use_container_width=True)
 
 # ============================================================
-# TAB 2: ДИНАМІКА
+# TAB 2: ДИНАМІКА (аналогічно)
 # ============================================================
 with tab2:
     st.subheader("📈 Детальна динаміка")
@@ -1412,7 +1406,7 @@ with tab4:
     st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—"), unsafe_allow_html=True)
 
 # ============================================================
-# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ (виправлена функція build_period_metrics)
+# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ (з виправленою функцією)
 # ============================================================
 with tab5:
     st.subheader("🆚 Порівняння двох довільних періодів")
@@ -1451,10 +1445,8 @@ with tab5:
         range_a = _normalize_range(range_a_input)
         range_b = _normalize_range(range_b_input)
 
-        # FIX: виправлена функція з приведенням часового поясу
         def build_period_metrics(date_range, ops):
             start, end = date_range
-            # Копіюємо df і приводимо дати до naive для безпечного порівняння
             df_local = df.copy()
             if df_local["date"].dt.tz is not None:
                 df_local["date"] = df_local["date"].dt.tz_localize(None)
@@ -1467,7 +1459,6 @@ with tab5:
             total = daily.sum()
             avg = daily.mean()
             peak = daily.max()
-            # Для TRUE/FALSE – визначаємо повні місяці в діапазоні
             full_months = []
             current = start
             while current <= end:
