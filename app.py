@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 import streamlit as st
 from google.oauth2.service_account import Credentials
 
@@ -17,6 +18,47 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
 )
+
+# ============================================================
+# DARK ANALYTICS THEME — кольорова палітра + глобальний Plotly template.
+# Реєструється ОДИН раз і застосовується автоматично до ВСІХ графіків
+# (px.*, go.Figure), без потреби правити кожен виклик окремо.
+# ============================================================
+KPO_BG = "#0b0f17"
+KPO_CARD_BG = "#131824"
+KPO_BORDER = "#1f2733"
+KPO_TEXT = "#e6edf3"
+KPO_TEXT_MUTED = "#8b98a9"
+
+KPO_CYAN = "#00d9ff"
+KPO_AMBER = "#ffb703"
+KPO_GREEN = "#06d6a0"
+KPO_RED = "#ef476f"
+KPO_PURPLE = "#8338ec"
+KPO_ORANGE = "#f4a261"
+KPO_BLUE = "#4cc9f0"
+KPO_PINK = "#ff6b9d"
+
+KPO_COLORWAY = [KPO_CYAN, KPO_AMBER, KPO_GREEN, KPO_RED, KPO_PURPLE, KPO_ORANGE, KPO_BLUE, KPO_PINK]
+
+# Кастомна теплова шкала "темна навігація → неоновий ціан" для градієнтів навантаження
+KPO_HEAT_SCALE = [[0.0, "#0b0f17"], [0.5, "#0d5c73"], [1.0, KPO_CYAN]]
+
+_kpo_dark_template = go.layout.Template(
+    layout=go.Layout(
+        paper_bgcolor=KPO_BG,
+        plot_bgcolor=KPO_BG,
+        font=dict(color=KPO_TEXT, family="Inter, sans-serif"),
+        colorway=KPO_COLORWAY,
+        xaxis=dict(gridcolor=KPO_BORDER, zerolinecolor=KPO_BORDER, linecolor=KPO_BORDER),
+        yaxis=dict(gridcolor=KPO_BORDER, zerolinecolor=KPO_BORDER, linecolor=KPO_BORDER),
+        legend=dict(bgcolor="rgba(0,0,0,0)"),
+        hoverlabel=dict(bgcolor=KPO_CARD_BG, font_color=KPO_TEXT, bordercolor=KPO_BORDER),
+        colorscale=dict(sequential=KPO_HEAT_SCALE),
+    )
+)
+pio.templates["kpo_dark"] = _kpo_dark_template
+pio.templates.default = "kpo_dark"
 
 SPREADSHEET_ID = "1STX1vgDAk3zVDshXdZmTgJJSvQNCN4WmmftOskwymYI"
 SHEETS = ["24", "25", "26"]
@@ -64,9 +106,9 @@ WEEKDAY_ORDER_UA = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 APPROVAL_GOOD_THRESHOLD = 85
 APPROVAL_WARN_THRESHOLD = 70
 
-COLOR_GOOD = "#2ecc71"
-COLOR_WARN = "#f1c40f"
-COLOR_BAD = "#e74c3c"
+COLOR_GOOD = KPO_GREEN
+COLOR_WARN = KPO_AMBER
+COLOR_BAD = KPO_RED
 
 
 def approval_rate_color(value):
@@ -865,45 +907,101 @@ def custom_metric(label, value, help_text=None, color=None):
     """
 
 
-st.markdown("""
+st.markdown(f"""
 <style>
-    .metric-container {
-        background: transparent;
-        padding: 0.3rem 0;
-        border: none;
-    }
-    .metric-label {
-        font-size: 0.8rem !important;
-        font-weight: 400;
-        letter-spacing: 0.02em;
-        margin-bottom: 0.15rem;
-        color: inherit !important;
-    }
-    .metric-value {
-        font-size: 1.3rem !important;
-        font-weight: 600;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
+
+    html, body, [class*="css"] {{
+        font-family: 'Inter', sans-serif;
+    }}
+
+    .stApp {{
+        background-color: {KPO_BG};
+    }}
+
+    /* --- Картки метрик --- */
+    .metric-container {{
+        background: {KPO_CARD_BG};
+        border: 1px solid {KPO_BORDER};
+        border-left: 3px solid {KPO_CYAN};
+        border-radius: 8px;
+        padding: 0.65rem 0.9rem;
+        margin-bottom: 0.5rem;
+        transition: border-left-color 0.15s ease;
+    }}
+    .metric-container:hover {{
+        border-left-color: {KPO_AMBER};
+    }}
+    .metric-label {{
+        font-size: 0.7rem !important;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 0.3rem;
+        color: {KPO_TEXT_MUTED} !important;
+    }}
+    .metric-value {{
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 1.45rem !important;
+        font-weight: 700;
         line-height: 1.2;
-        color: inherit !important;
-    }
-    .help-icon {
+        color: {KPO_TEXT} !important;
+    }}
+    .help-icon {{
         display: inline-block;
-        background: rgba(128, 128, 128, 0.2);
+        background: rgba(0, 217, 255, 0.15);
         border-radius: 50%;
-        width: 16px;
-        height: 16px;
+        width: 15px;
+        height: 15px;
         text-align: center;
-        line-height: 16px;
-        font-size: 0.65rem;
-        color: inherit !important;
+        line-height: 15px;
+        font-size: 0.62rem;
+        color: {KPO_CYAN} !important;
         cursor: help;
         margin-left: 3px;
-    }
-    .comparison-text {
-        font-size: 0.8rem !important;
-        line-height: 1.3 !important;
+    }}
+    .comparison-text {{
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.85rem !important;
+        line-height: 1.4 !important;
         margin: 0 !important;
-        color: inherit !important;
-    }
+        color: {KPO_TEXT} !important;
+    }}
+
+    /* --- Вкладки --- */
+    .stTabs [data-baseweb="tab-list"] {{
+        gap: 4px;
+        border-bottom: 1px solid {KPO_BORDER};
+    }}
+    .stTabs [data-baseweb="tab"] {{
+        background-color: transparent;
+        border-radius: 6px 6px 0 0;
+        color: {KPO_TEXT_MUTED};
+        padding: 8px 18px;
+        font-weight: 500;
+    }}
+    .stTabs [aria-selected="true"] {{
+        background-color: {KPO_CARD_BG} !important;
+        color: {KPO_CYAN} !important;
+        border-bottom: 2px solid {KPO_CYAN} !important;
+    }}
+
+    /* --- Сайдбар --- */
+    section[data-testid="stSidebar"] {{
+        background-color: #0e131d;
+        border-right: 1px solid {KPO_BORDER};
+    }}
+
+    /* --- Заголовки --- */
+    h1, h2, h3 {{
+        font-family: 'Inter', sans-serif;
+        letter-spacing: -0.01em;
+    }}
+
+    /* --- Розділювачі --- */
+    hr {{
+        border-color: {KPO_BORDER} !important;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1144,7 +1242,7 @@ with tab1:
             y="value",
             markers=True,
             labels={"date": "Дата", "value": "Кількість"},
-            color_discrete_sequence=["blue"],
+            color_discrete_sequence=[KPO_CYAN],
         )
         fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
         if smooth_enabled:
@@ -1154,7 +1252,7 @@ with tab1:
                 y=daily["value_smooth"],
                 mode="lines",
                 name=f"Ковзне середнє ({smooth_window} дн.)",
-                line=dict(color="orange", width=3),
+                line=dict(color=KPO_AMBER, width=3),
             )
         anomalies = detect_anomalies(filtered, window=14, threshold=1.5)
         if not anomalies.empty:
@@ -1164,7 +1262,7 @@ with tab1:
                     x=anomaly_points["date"],
                     y=anomaly_points["value"],
                     mode="markers",
-                    marker=dict(color="red", size=10, symbol="x"),
+                    marker=dict(color=KPO_RED, size=10, symbol="x"),
                     name="Аномалія",
                 )
     else:
@@ -1210,7 +1308,7 @@ with tab2:
                 y=daily["value_smooth"],
                 mode="lines",
                 name=f"Ковзне середнє ({smooth_window} дн.)",
-                line=dict(color="orange", width=3),
+                line=dict(color=KPO_AMBER, width=3),
             )
         anomalies = detect_anomalies(filtered, window=14, threshold=1.5)
         if not anomalies.empty:
@@ -1220,7 +1318,7 @@ with tab2:
                     x=anomaly_points["date"],
                     y=anomaly_points["value"],
                     mode="markers",
-                    marker=dict(color="red", size=10, symbol="x"),
+                    marker=dict(color=KPO_RED, size=10, symbol="x"),
                     name="Аномалія",
                 )
     else:
@@ -1377,7 +1475,7 @@ with tab3:
             fig_approval.add_hline(
                 y=total_rate,
                 line_dash="dash",
-                line_color="red",
+                line_color=KPO_RED,
                 annotation_text=f"Тотал: {total_rate:.1f}%",
                 annotation_position="top left",
             )
@@ -1490,7 +1588,7 @@ with tab3:
             x=pareto_data["operation"],
             y=pareto_data["value"],
             name="Кількість",
-            marker_color="steelblue",
+            marker_color=KPO_CYAN,
             yaxis="y",
         ))
         fig_pareto.add_trace(go.Scatter(
@@ -1498,7 +1596,7 @@ with tab3:
             y=pareto_data["cumulative_percent"],
             name="Накопичувальна частка, %",
             mode="lines+markers",
-            marker_color="red",
+            marker_color=KPO_AMBER,
             yaxis="y2",
         ))
         fig_pareto.add_hline(y=80, line_dash="dash", line_color="gray", annotation_text="80%", annotation_position="top right")
@@ -1603,7 +1701,7 @@ with tab4:
         text_auto=".1f",
         aspect="auto",
         labels=dict(x="День тижня", y="Місяць", color="Середня кількість"),
-        color_continuous_scale="Blues",
+        color_continuous_scale=KPO_HEAT_SCALE,
     )
     fig_heatmap.update_layout(height=450, margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_heatmap, use_container_width=True)
@@ -1667,7 +1765,7 @@ with tab4:
             st.info("Недостатньо даних для побудови кривих щільності.")
         else:
             fig_density = go.Figure()
-            colors = {"Всі дні": "blue", "Будні": "green", "Вихідні": "orange"}
+            colors = {"Всі дні": KPO_CYAN, "Будні": KPO_GREEN, "Вихідні": KPO_AMBER}
             max_density = 0
             for group_name, data in zip(group_names, dev_data):
                 if len(data) > 1:
@@ -1691,7 +1789,7 @@ with tab4:
                     y=[0, max_density * 1.1],
                     mode='lines',
                     name='Середнє (0%)',
-                    line=dict(color='red', width=2, dash='dash'),
+                    line=dict(color=KPO_RED, width=2, dash='dash'),
                     showlegend=True
                 ))
                 median_all = np.median(dev_all) if len(dev_all) > 0 else None
@@ -1701,7 +1799,7 @@ with tab4:
                         y=[0, max_density * 1.1],
                         mode='lines',
                         name=f'Медіана ({median_all:.1f}%)',
-                        line=dict(color='black', width=2, dash='dash'),
+                        line=dict(color=KPO_TEXT, width=2, dash='dash'),
                         showlegend=True
                     ))
                 median_wd = np.median(dev_wd) if len(dev_wd) > 0 else None
