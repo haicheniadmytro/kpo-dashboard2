@@ -1530,7 +1530,13 @@ with tab3:
                 zmin=0,
                 zmax=100,
             )
-            fig_approval_heat.update_layout(height=420, margin=dict(l=10, r=10, t=20, b=10))
+            # Динамічна висота теплової карти залежно від кількості місяців.
+            # Це запобігає накладанню рядків при виборі кількох років.
+            heatmap_height = max(420, min(1200, len(heat_rate_pivot.index) * 34))
+            fig_approval_heat.update_layout(
+                height=heatmap_height,
+                margin=dict(l=10, r=10, t=20, b=10),
+            )
             st.plotly_chart(fig_approval_heat, use_container_width=True)
             st.caption("🔴 <70% 🟡 70-85% 🟢 >85% — кольорова шкала неперервна, орієнтир — ті самі пороги.")
 
