@@ -62,11 +62,7 @@ pio.templates.default = "kpo_dark"
 # ============================================================
 # 3. Безпечне зчитування конфіденційних даних
 # ============================================================
-try:
-    SPREADSHEET_ID = st.secrets["SPREADSHEET_ID"]
-except KeyError:
-    st.error("Не знайдено SPREADSHEET_ID у secrets. Додайте його у .streamlit/secrets.toml")
-    st.stop()
+SPREADSHEET_ID = "1STX1vgDAk3zVDshXdZmTgJJSvQNCN4WmmftOskwymYI"
 
 # ============================================================
 # 4. Автоматичне визначення років
