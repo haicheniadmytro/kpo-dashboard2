@@ -121,6 +121,7 @@ logger = logging.getLogger(__name__)
 # 5. Часові функції
 # ============================================================
 def now_kyiv() -> pd.Timestamp:
+    # Повертає naive timestamp (без часового поясу) – сумісний з df["date"]
     return pd.Timestamp.now(tz=KYIV_TZ).replace(tzinfo=None).normalize()
 
 def now_kyiv_exact() -> pd.Timestamp:
@@ -300,7 +301,8 @@ def load_data():
     if df_raw.empty:
         raise ValueError("Не знайдено деталізованих даних у Google Таблиці.")
 
-    df_raw["date"] = pd.to_datetime(df_raw["date"]).dt.tz_localize(KYIV_TZ)
+    # FIX: БІЛЬШЕ НЕ ДОДАЄМО ЧАСОВИЙ ПОЯС – ВСЕ NAIVE
+    df_raw["date"] = pd.to_datetime(df_raw["date"])
 
     date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend"]].drop_duplicates("date")
 
@@ -598,14 +600,13 @@ if smooth_enabled:
     smooth_window = st.sidebar.selectbox("Вікно згладжування (дні)", [3, 5, 7, 14], index=2)
 
 # ============================================================
-# 11. Фільтрація даних (виправлено порівняння дат)
+# 11. Фільтрація даних (тепер без конвертацій часових поясів)
 # ============================================================
 if operation_mode == "Тотал":
     op_mask = df["operation"] == "Тотал"
 else:
     op_mask = df["operation"].isin(selected_operations)
 
-# --- ВИПРАВЛЕННЯ: приведення дат до naive для порівняння з custom_range ---
 if period_mode == "За місяцями":
     filtered = df[
         df["year"].isin(selected_years)
@@ -613,10 +614,10 @@ if period_mode == "За місяцями":
         & op_mask
     ].copy()
 else:
-    date_naive = df["date"].dt.tz_localize(None)
+    # df["date"] вже naive, custom_range теж naive – порівнюємо напряму
     filtered = df[
-        (date_naive >= custom_range[0])
-        & (date_naive <= custom_range[1])
+        (df["date"] >= custom_range[0])
+        & (df["date"] <= custom_range[1])
         & op_mask
     ].copy()
 
@@ -625,10 +626,7 @@ if filtered.empty:
     st.stop()
 
 today = now_kyiv()
-# Приводимо filtered["date"] до naive для порівняння з today
-if filtered["date"].dt.tz is not None:
-    filtered["date"] = filtered["date"].dt.tz_localize(None)
-
+# df["date"] вже naive, today теж naive – порівнюємо напряму
 if period_mode == "За місяцями":
     if len(selected_months) == 1:
         period = pd.Period(selected_months[0])
@@ -672,7 +670,7 @@ busiest_weekday, busiest_weekday_val = calc_busiest_weekday(filtered)
 busiest_op, busiest_op_val = calc_busiest_operation(filtered)
 std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
-# --- Коефіцієнт погоджень (FIX 1: тільки для повних місяців) ---
+# --- Коефіцієнт погоджень (тільки для повних місяців) ---
 if period_mode == "За місяцями":
     tf_filtered = filtered[["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
 else:
@@ -783,7 +781,7 @@ if period_mode == "За місяцями" and len(selected_months) == 1 and oper
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
 # ============================================================
-# 13. Функція custom_metric та CSS
+# 13. Функція custom_metric та CSS (без змін)
 # ============================================================
 def custom_metric(label, value, help_text=None, color=None):
     safe_label = html.escape(str(label))
@@ -912,7 +910,7 @@ def forecast_cards(title, forecast, help_base=None, help_min=None, help_max=None
         st.markdown(custom_metric(f"{title} (оптимістичний)", f"{forecast['max']:,.0f}", help_max), unsafe_allow_html=True)
 
 # ============================================================
-# 14. Вкладки (залишаються без змін, крім Tab 5, де вже виправлено)
+# 14. Вкладки
 # ============================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "📈 Динаміка", "🧩 Операції", "📅 Навантаження", "🆚 Порівняння періодів"])
 
@@ -1406,7 +1404,7 @@ with tab4:
     st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—"), unsafe_allow_html=True)
 
 # ============================================================
-# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ (з виправленою функцією)
+# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ (ОПТИМІЗОВАНО)
 # ============================================================
 with tab5:
     st.subheader("🆚 Порівняння двох довільних періодів")
@@ -1445,13 +1443,11 @@ with tab5:
         range_a = _normalize_range(range_a_input)
         range_b = _normalize_range(range_b_input)
 
+        # FIX: НЕ копіюємо df, не конвертуємо – він уже naive
         def build_period_metrics(date_range, ops):
             start, end = date_range
-            df_local = df.copy()
-            if df_local["date"].dt.tz is not None:
-                df_local["date"] = df_local["date"].dt.tz_localize(None)
-            mask = (df_local["date"] >= start) & (df_local["date"] <= end) & (df_local["operation"].isin(ops))
-            scoped = df_local[mask]
+            mask = (df["date"] >= start) & (df["date"] <= end) & (df["operation"].isin(ops))
+            scoped = df[mask]
             scoped_stats = with_data(scoped)
             if scoped_stats.empty:
                 return None
