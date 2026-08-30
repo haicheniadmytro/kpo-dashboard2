@@ -92,10 +92,8 @@ OPERATIONS = [
 def normalize_operation(value):
     if not isinstance(value, str):
         return ""
-    # Видаляємо зайві пробіли на початку/в кінці та зводимо множинні пробіли до одного
     return " ".join(value.strip().split())
 
-# Словник лише для реальних синонімів (наприклад, різні варіанти однієї операції)
 ALIASES = {
     "Зміна дати активації": "Зміна дати активації",
 }
@@ -403,12 +401,10 @@ def detect_anomalies(df, window=14, threshold=3.0):
         if len(group) < 3:
             continue
         group = group.sort_values("date").copy()
-        # Робастні статистики: медіана та MAD (медіанне абсолютне відхилення)
         group["rolling_median"] = group["value"].rolling(window=window, min_periods=1, center=True).median()
         group["rolling_mad"] = group["value"].rolling(window=window, min_periods=1, center=True).apply(
             lambda x: np.median(np.abs(x - np.median(x))) if len(x) > 1 else 0
         )
-        # Z-оцінка на основі MAD (консервативніше)
         group["z_score"] = (group["value"] - group["rolling_median"]) / (group["rolling_mad"] * 1.4826).replace(0, 1)
         group["is_anomaly"] = abs(group["z_score"]) > threshold
         all_anomalies.append(group)
@@ -636,7 +632,6 @@ if filtered.empty:
 
 today = now_kyiv()
 # FIX: порівняння дат з урахуванням часового поясу
-# Переконуємося, що колонка date є tz-naive для порівняння
 if filtered["date"].dt.tz is not None:
     filtered["date"] = filtered["date"].dt.tz_localize(None)
 
@@ -685,10 +680,8 @@ std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
 # --- Коефіцієнт погоджень (FIX 1: тільки для повних місяців у довільному діапазоні) ---
 if period_mode == "За місяцями":
-    # Для місяців беремо всі місяці, які повністю входять у вибірку (умова виконується)
     tf_filtered = filtered[["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
 else:
-    # Для довільного діапазону: визначаємо повні місяці (ті, що повністю потрапляють у діапазон)
     start_date, end_date = custom_range
     full_months = []
     current = start_date
@@ -925,7 +918,7 @@ def forecast_cards(title, forecast, help_base=None, help_min=None, help_max=None
         st.markdown(custom_metric(f"{title} (оптимістичний)", f"{forecast['max']:,.0f}", help_max), unsafe_allow_html=True)
 
 # ============================================================
-# 15. Вкладки (Overview, Dynamics, Operations, Loading, Comparison)
+# 15. Вкладки
 # ============================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "📈 Динаміка", "🧩 Операції", "📅 Навантаження", "🆚 Порівняння періодів"])
 
@@ -1098,7 +1091,7 @@ with tab1:
     st.plotly_chart(fig_overview, use_container_width=True)
 
 # ============================================================
-# TAB 2: ДИНАМІКА (повністю аналогічно, але з новим detect_anomalies)
+# TAB 2: ДИНАМІКА
 # ============================================================
 with tab2:
     st.subheader("📈 Детальна динаміка")
@@ -1181,7 +1174,7 @@ with tab2:
         st.info("Недостатньо даних для виявлення аномалій.")
 
 # ============================================================
-# TAB 3: ОПЕРАЦІЇ (з виправленням для довільного діапазону)
+# TAB 3: ОПЕРАЦІЇ
 # ============================================================
 with tab3:
     st.subheader("🧩 Аналіз операцій")
@@ -1228,7 +1221,6 @@ with tab3:
         st.info("Немає даних для розрахунку коефіцієнта погоджень (потрібні повні календарні місяці).")
 
     st.subheader("🌡️ Теплова карта коефіцієнта погоджень (Операція × Місяць)")
-    # Використовуємо той самий період (повні місяці)
     tf_heat = df[period_mask][["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
     if not tf_heat.empty:
         tf_heat = tf_heat.copy()
@@ -1305,7 +1297,7 @@ with tab3:
         st.info("Немає даних про окремі операції для вибраного періоду.")
 
 # ============================================================
-# TAB 4: НАВАНТАЖЕННЯ (без змін)
+# TAB 4: НАВАНТАЖЕННЯ
 # ============================================================
 with tab4:
     st.subheader("📅 Аналіз навантаження")
@@ -1420,7 +1412,7 @@ with tab4:
     st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—"), unsafe_allow_html=True)
 
 # ============================================================
-# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ (з виправленням TRUE/FALSE для довільного діапазону)
+# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ (виправлена функція build_period_metrics)
 # ============================================================
 with tab5:
     st.subheader("🆚 Порівняння двох довільних періодів")
@@ -1459,10 +1451,15 @@ with tab5:
         range_a = _normalize_range(range_a_input)
         range_b = _normalize_range(range_b_input)
 
+        # FIX: виправлена функція з приведенням часового поясу
         def build_period_metrics(date_range, ops):
             start, end = date_range
-            mask = (df["date"] >= start) & (df["date"] <= end) & (df["operation"].isin(ops))
-            scoped = df[mask]
+            # Копіюємо df і приводимо дати до naive для безпечного порівняння
+            df_local = df.copy()
+            if df_local["date"].dt.tz is not None:
+                df_local["date"] = df_local["date"].dt.tz_localize(None)
+            mask = (df_local["date"] >= start) & (df_local["date"] <= end) & (df_local["operation"].isin(ops))
+            scoped = df_local[mask]
             scoped_stats = with_data(scoped)
             if scoped_stats.empty:
                 return None
