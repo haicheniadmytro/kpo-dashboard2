@@ -1188,7 +1188,20 @@ with tab3:
             category_orders={"operation": approval_by_op_display["operation"].tolist()},
         )
         fig_approval.update_traces(textposition="outside", width=0.55)
-        fig_approval.update_layout(height=360, margin=dict(l=10, r=10, t=20, b=10), yaxis=dict(range=[0, 100]), bargap=0.45, legend_title_text="Категорія")
+
+        # ========== ВИПРАВЛЕННЯ: динамічний діапазон осі Y, щоб текст не перекривався ==========
+        max_rate = approval_by_op_display["approval_rate"].max()
+        # Якщо максимум менший за 100, то залишаємо 100, інакше додаємо запас 5%
+        y_max = max(100, max_rate + 5)
+        fig_approval.update_layout(
+            height=360,
+            margin=dict(l=10, r=10, t=20, b=10),
+            yaxis=dict(range=[0, y_max]),
+            bargap=0.45,
+            legend_title_text="Категорія"
+        )
+        # ===============================================================================
+
         if total_rate is not None:
             fig_approval.add_hline(y=total_rate, line_dash="dash", line_color=KPO_RED, annotation_text=f"Тотал: {total_rate:.1f}%", annotation_position="top left")
         st.plotly_chart(fig_approval, use_container_width=True)
