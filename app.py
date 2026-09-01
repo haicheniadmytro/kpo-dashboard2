@@ -1189,10 +1189,10 @@ with tab3:
         )
         fig_approval.update_traces(textposition="outside", width=0.55)
 
-        # ========== ВИПРАВЛЕННЯ: динамічний діапазон осі Y, щоб текст не перекривався ==========
+        # ========== ВИПРАВЛЕННЯ: більший запас для осі Y, щоб текст не перекривався ==========
         max_rate = approval_by_op_display["approval_rate"].max()
-        # Якщо максимум менший за 100, то залишаємо 100, інакше додаємо запас 5%
-        y_max = max(100, max_rate + 5)
+        # Додаємо 12% запасу або мінімум 105
+        y_max = max(105, max_rate * 1.12)
         fig_approval.update_layout(
             height=360,
             margin=dict(l=10, r=10, t=20, b=10),
