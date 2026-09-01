@@ -1203,7 +1203,27 @@ with tab3:
         # ===============================================================================
 
         if total_rate is not None:
-            fig_approval.add_hline(y=total_rate, line_dash="dash", line_color=KPO_RED, annotation_text=f"Тотал: {total_rate:.1f}%", annotation_position="top left")
+            # Додаємо лінію Тотал з покращеним відображенням
+            fig_approval.add_hline(
+                y=total_rate,
+                line_dash="dash",
+                line_color=KPO_RED,
+                line_width=4,                     # жирніша лінія
+                annotation_text=f"Тотал: {total_rate:.1f}%",
+                annotation_position="top right",   # текст праворуч
+                annotation_font=dict(size=16, color="white")  # більший білий шрифт
+            )
+            # Додаємо легенду для цієї лінії (фіктивний слід)
+            fig_approval.add_trace(
+                go.Scatter(
+                    x=[None], y=[None],
+                    mode='lines',
+                    line=dict(color=KPO_RED, width=4, dash='dash'),
+                    name=f"Тотал: {total_rate:.1f}%",
+                    showlegend=True
+                )
+            )
+
         st.plotly_chart(fig_approval, use_container_width=True)
 
         with st.expander("📋 Таблиця по операціях", expanded=False):
