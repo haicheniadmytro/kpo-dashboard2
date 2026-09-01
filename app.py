@@ -79,10 +79,13 @@ MONTHS = {
     "Вересень": 9, "Жовтень": 10, "Листопад": 11, "Грудень": 12,
 }
 
+# ========== ОСНОВНЕ ВИПРАВЛЕННЯ: додано операцію "Loyalty" ==========
 OPERATIONS = [
     "Бонуси", "Призупинка", "Відновлення", "Відміна SF",
     "Переоформлення", "Закриття контракта", "Со-доступ", "Зміна дати активації",
+    "Loyalty",   # <-- нова операція
 ]
+# ====================================================================
 
 def normalize_operation(value):
     if not isinstance(value, str):
@@ -108,7 +111,7 @@ COLOR_BAD = KPO_RED
 TOTAL_ROW_SEARCH_RANGE = 10
 DETAIL_SEARCH_RANGE = 30
 FIRST_DAY_COLUMN = 4
-PER_OP_TF_SEARCH_RANGE = len(OPERATIONS) + 3
+PER_OP_TF_SEARCH_RANGE = len(OPERATIONS) + 3   # автоматично збільшиться
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -297,7 +300,6 @@ def load_data():
     if df_raw.empty:
         raise ValueError("Не знайдено деталізованих даних у Google Таблиці.")
 
-    # FIX: БІЛЬШЕ НЕ ДОДАЄМО ЧАСОВИЙ ПОЯС – ВСЕ NAIVE
     df_raw["date"] = pd.to_datetime(df_raw["date"])
 
     date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend"]].drop_duplicates("date")
@@ -596,7 +598,7 @@ if smooth_enabled:
     smooth_window = st.sidebar.selectbox("Вікно згладжування (дні)", [3, 5, 7, 14], index=2)
 
 # ============================================================
-# 11. Фільтрація даних (тепер без конвертацій часових поясів)
+# 11. Фільтрація даних
 # ============================================================
 if operation_mode == "Тотал":
     op_mask = df["operation"] == "Тотал"
@@ -610,7 +612,6 @@ if period_mode == "За місяцями":
         & op_mask
     ].copy()
 else:
-    # df["date"] вже naive, custom_range теж naive – порівнюємо напряму
     filtered = df[
         (df["date"] >= custom_range[0])
         & (df["date"] <= custom_range[1])
@@ -622,7 +623,6 @@ if filtered.empty:
     st.stop()
 
 today = now_kyiv()
-# df["date"] вже naive, today теж naive – порівнюємо напряму
 if period_mode == "За місяцями":
     if len(selected_months) == 1:
         period = pd.Period(selected_months[0])
@@ -777,7 +777,7 @@ if period_mode == "За місяцями" and len(selected_months) == 1 and oper
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 
 # ============================================================
-# 13. Функція custom_metric та CSS (без змін)
+# 13. Функція custom_metric та CSS
 # ============================================================
 def custom_metric(label, value, help_text=None, color=None):
     safe_label = html.escape(str(label))
@@ -1439,7 +1439,6 @@ with tab5:
         range_a = _normalize_range(range_a_input)
         range_b = _normalize_range(range_b_input)
 
-        # FIX: НЕ копіюємо df, не конвертуємо – він уже naive
         def build_period_metrics(date_range, ops):
             start, end = date_range
             mask = (df["date"] >= start) & (df["date"] <= end) & (df["operation"].isin(ops))
