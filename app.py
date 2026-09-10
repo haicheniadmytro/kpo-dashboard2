@@ -79,13 +79,11 @@ MONTHS = {
     "Вересень": 9, "Жовтень": 10, "Листопад": 11, "Грудень": 12,
 }
 
-# ========== ОСНОВНЕ ВИПРАВЛЕННЯ: додано операцію "Loyalty" ==========
 OPERATIONS = [
     "Бонуси", "Призупинка", "Відновлення", "Відміна SF",
     "Переоформлення", "Закриття контракта", "Со-доступ", "Зміна дати активації",
-    "Loyalty",   # <-- нова операція
+    "Loyalty",
 ]
-# ====================================================================
 
 def normalize_operation(value):
     if not isinstance(value, str):
@@ -111,7 +109,7 @@ COLOR_BAD = KPO_RED
 TOTAL_ROW_SEARCH_RANGE = 10
 DETAIL_SEARCH_RANGE = 30
 FIRST_DAY_COLUMN = 4
-PER_OP_TF_SEARCH_RANGE = len(OPERATIONS) + 3   # автоматично збільшиться
+PER_OP_TF_SEARCH_RANGE = len(OPERATIONS) + 3
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -120,7 +118,6 @@ logger = logging.getLogger(__name__)
 # 5. Часові функції
 # ============================================================
 def now_kyiv() -> pd.Timestamp:
-    # Повертає naive timestamp (без часового поясу) – сумісний з df["date"]
     return pd.Timestamp.now(tz=KYIV_TZ).replace(tzinfo=None).normalize()
 
 def now_kyiv_exact() -> pd.Timestamp:
@@ -425,6 +422,60 @@ def gaussian_kde_np(data, x_grid, bandwidth=None):
     kernel = np.exp(-0.5 * u * u)
     density = kernel.sum(axis=1) / (n * bandwidth * np.sqrt(2 * np.pi))
     return density
+
+def analyze_density(group_names, dev_data):
+    """
+    Обчислює статистичні характеристики кожної кривої щільності
+    на основі реальних даних поточного періоду.
+    """
+    stats = {}
+    for name, data in zip(group_names, dev_data):
+        if data is None or len(data) < 2:
+            continue
+        data = np.asarray(data, dtype=float)
+        data = data[np.isfinite(data)]
+        if len(data) < 2:
+            continue
+        n = len(data)
+        std_d = float(np.std(data))
+        median_d = float(np.median(data))
+        p25, p75 = np.percentile(data, [25, 75])
+        iqr = float(p75 - p25)
+        try:
+            skew_val = float(pd.Series(data).skew())
+        except Exception:
+            skew_val = 0.0
+        bins = max(5, min(12, n))
+        hist, edges = np.histogram(data, bins=bins)
+        peak_idx = int(np.argmax(hist))
+        peak_center = float((edges[peak_idx] + edges[peak_idx + 1]) / 2)
+        peak_height_pct = float(hist[peak_idx] / n * 100)
+
+        if std_d < 15:
+            width_key = "вузька"
+            width_txt = f"вузька (σ = {std_d:.1f}%) — дні стабільні"
+        elif std_d < 30:
+            width_key = "середня"
+            width_txt = f"середня (σ = {std_d:.1f}%) — помірна варіативність"
+        else:
+            width_key = "широка"
+            width_txt = f"широка (σ = {std_d:.1f}%) — великий розкид"
+
+        if abs(skew_val) < 0.3:
+            skew_txt = "симетричний"
+        elif skew_val > 0:
+            skew_txt = f"зміщений вправо (хвіст у бік підвищених днів, skew = {skew_val:+.2f})"
+        else:
+            skew_txt = f"зміщений вліво (хвіст у бік знижених днів, skew = {skew_val:+.2f})"
+
+        stats[name] = {
+            "n": n, "std": std_d, "median": median_d, "iqr": iqr,
+            "skew": skew_val, "peak": peak_center, "peak_pct": peak_height_pct,
+            "width_key": width_key, "width_txt": width_txt,
+            "skew_txt": skew_txt,
+            "min": float(data.min()), "max": float(data.max()),
+        }
+    return stats
 
 def forecast_scenarios(df, current_month):
     if df.empty or current_month not in df["month"].values:
@@ -1079,7 +1130,7 @@ with tab1:
     st.plotly_chart(fig_overview, use_container_width=True)
 
 # ============================================================
-# TAB 2: ДИНАМІКА (аналогічно)
+# TAB 2: ДИНАМІКА
 # ============================================================
 with tab2:
     st.subheader("📈 Детальна динаміка")
@@ -1189,9 +1240,7 @@ with tab3:
         )
         fig_approval.update_traces(textposition="outside", width=0.55)
 
-        # ========== ВИПРАВЛЕННЯ: більший запас для осі Y, щоб текст не перекривався ==========
         max_rate = approval_by_op_display["approval_rate"].max()
-        # Додаємо 12% запасу або мінімум 105
         y_max = max(105, max_rate * 1.12)
         fig_approval.update_layout(
             height=360,
@@ -1200,20 +1249,17 @@ with tab3:
             bargap=0.45,
             legend_title_text="Категорія"
         )
-        # ===============================================================================
 
         if total_rate is not None:
-            # Додаємо лінію Тотал з покращеним відображенням
             fig_approval.add_hline(
                 y=total_rate,
                 line_dash="dash",
                 line_color=KPO_RED,
-                line_width=4,                     # жирніша лінія
+                line_width=4,
                 annotation_text=f"Тотал: {total_rate:.1f}%",
-                annotation_position="top right",   # текст праворуч
-                annotation_font=dict(size=16, color="white")  # більший білий шрифт
+                annotation_position="top right",
+                annotation_font=dict(size=16, color="white")
             )
-            # Додаємо легенду для цієї лінії (фіктивний слід)
             fig_approval.add_trace(
                 go.Scatter(
                     x=[None], y=[None],
@@ -1420,10 +1466,169 @@ with tab4:
                     fig_density.add_trace(go.Scatter(x=[median_all, median_all], y=[0, max_density*1.1], mode='lines', name=f'Медіана ({median_all:.1f}%)', line=dict(color=KPO_TEXT, width=2, dash='dash'), showlegend=True))
             fig_density.update_layout(title="Криві щільності відхилень від середнього", xaxis_title="Відхилення, %", yaxis_title="Щільність", height=400, margin=dict(l=10, r=10, t=40, b=10), legend=dict(title="Група / лінії", x=0.98, y=0.98, xanchor='right', yanchor='top', bgcolor='rgba(0,0,0,0)'), hovermode="x unified")
             st.plotly_chart(fig_density, use_container_width=True)
-            with st.expander("❓ Що означає форма кривих?"):
-                st.markdown("...")
-            with st.expander("❓ Як це інтерпретувати для бізнесу?"):
-                st.markdown("...")
+
+            # ---- ДИНАМІЧНИЙ АНАЛІЗ КРИВИХ (на основі реальних даних) ----
+            density_stats = analyze_density(group_names, dev_data)
+
+            # Аномалії для згадки у бізнес-частині
+            density_anomalies = detect_anomalies(filtered, window=14, threshold=3.0)
+            if not density_anomalies.empty:
+                density_anomaly_points = density_anomalies[density_anomalies["is_anomaly"]].copy()
+            else:
+                density_anomaly_points = pd.DataFrame()
+
+            # ============ Expander 1: Що означає форма кривих? ============
+            with st.expander("❓ Що означає форма кривих? (автоматичний опис ваших даних)"):
+                if not density_stats:
+                    st.info("Недостатньо даних для опису.")
+                else:
+                    st.markdown(
+                        "Нижче — опис **саме ваших кривих**, обчислений за поточний період. "
+                        "Відхилення вимірюється у % від середнього: 0% — типовий день, "
+                        "+20% — день на 20% інтенсивніший за середній."
+                    )
+                    for name, s in density_stats.items():
+                        st.markdown(
+                            f"**🔹 {name}** (n = {s['n']} днів)\n"
+                            f"- Пік кривої припадає на **{s['peak']:+.1f}%** — "
+                            f"тобто найчастіше значення навантаження близьке до цієї точки "
+                            f"(тут зосереджено ≈ {s['peak_pct']:.0f}% усіх днів).\n"
+                            f"- Медіана = **{s['median']:+.1f}%**, IQR = **{s['iqr']:.1f} п.п.** "
+                            f"(50% днів лежать у межах ±{s['iqr']/2:.1f} п.п. навколо медіани).\n"
+                            f"- Розподіл **{s['skew_txt']}**.\n"
+                            f"- Форма кривої **{s['width_txt']}**.\n"
+                            f"- Діапазон відхилень: від **{s['min']:+.1f}%** до **{s['max']:+.1f}%**."
+                        )
+                        st.markdown("")
+
+                    if len(density_stats) > 1:
+                        widest = max(density_stats.items(), key=lambda kv: kv[1]["std"])
+                        narrowest = min(density_stats.items(), key=lambda kv: kv[1]["std"])
+                        st.markdown(
+                            f"**Порівняння груп:** найширший розкид — у **{widest[0]}** "
+                            f"(σ = {widest[1]['std']:.1f}%), найвужчий — у **{narrowest[0]}** "
+                            f"(σ = {narrowest[1]['std']:.1f}%). "
+                            f"Різниця у стабільності ≈ **{widest[1]['std'] - narrowest[1]['std']:.1f} п.п.**"
+                        )
+
+            # ============ Expander 2: Як це інтерпретувати для бізнесу? ============
+            with st.expander("❓ Як це інтерпретувати для бізнесу? (висновки за вашими даними)"):
+                if not density_stats:
+                    st.info("Недостатньо даних для інтерпретації.")
+                else:
+                    business_lines = []
+
+                    # 1. Порівняння будні ↔ вихідні
+                    if "Будні" in density_stats and "Вихідні" in density_stats:
+                        wd, we = density_stats["Будні"], density_stats["Вихідні"]
+                        ratio = we["std"] / wd["std"] if wd["std"] > 0 else 1.0
+                        if ratio > 1.3:
+                            business_lines.append(
+                                f"🔴 **Вихідні менш передбачувані за будні.** "
+                                f"Розкид у вихідні σ = {we['std']:.1f}% проти σ = {wd['std']:.1f}% у будні "
+                                f"(у {ratio:.1f}× більше). Варто тримати додатковий резерв потужності саме на вихідні."
+                            )
+                        elif ratio < 0.7:
+                            business_lines.append(
+                                f"🟢 **Вихідні стабільніші за будні** (σ = {we['std']:.1f}% проти {wd['std']:.1f}%). "
+                                f"Пікові навантаження концентруються у будні — плануйте ресурси саме туди."
+                            )
+                        else:
+                            business_lines.append(
+                                f"ℹ️ **Стабільність буднів і вихідних схожа** "
+                                f"(σ = {wd['std']:.1f}% і {we['std']:.1f}%). "
+                                f"Окремий резерв під вихідні не потрібен."
+                            )
+
+                        diff_med = wd["median"] - we["median"]
+                        if abs(diff_med) > 5:
+                            if diff_med > 0:
+                                business_lines.append(
+                                    f"📊 **У будні типове навантаження вище** — медіана відхилення "
+                                    f"{wd['median']:+.1f}% проти {we['median']:+.1f}% у вихідні "
+                                    f"(різниця ≈ {diff_med:.1f} п.п.)."
+                                )
+                            else:
+                                business_lines.append(
+                                    f"📊 **У вихідні типове навантаження вище** — медіана "
+                                    f"{we['median']:+.1f}% проти {wd['median']:+.1f}% у будні "
+                                    f"(різниця ≈ {-diff_med:.1f} п.п.)."
+                                )
+
+                    # 2. Асиметрія — куди «хвіст»
+                    for name, s in density_stats.items():
+                        if s["skew"] > 0.5:
+                            business_lines.append(
+                                f"⚠️ **{name}: асиметрія вправо** (skew = {s['skew']:+.2f}). "
+                                f"Більшість днів нижче середнього, але трапляються рідкісні "
+                                f"пікові дні (макс. {s['max']:+.1f}%). Це «дорогі» дні — потрібен запас."
+                            )
+                        elif s["skew"] < -0.5:
+                            business_lines.append(
+                                f"⚠️ **{name}: асиметрія вліво** (skew = {s['skew']:+.2f}). "
+                                f"Більшість днів вище середнього, зрідка — провали "
+                                f"(мін. {s['min']:+.1f}%). Можливі простої або недозавантаження."
+                            )
+
+                    # 3. Загальний висновок по стабільності
+                    avg_std = float(np.mean([s["std"] for s in density_stats.values()]))
+                    if avg_std < 15:
+                        business_lines.append(
+                            f"✅ **Загальна стабільність висока** (середнє σ = {avg_std:.1f}%). "
+                            f"Можна планувати ресурси за середнім без великого запасу."
+                        )
+                    elif avg_std < 30:
+                        business_lines.append(
+                            f"🟡 **Помірна варіативність** (середнє σ = {avg_std:.1f}%). "
+                            f"Рекомендується тримати резерв ≈ {avg_std:.0f}% від середнього на пікові дні."
+                        )
+                    else:
+                        business_lines.append(
+                            f"🔴 **Висока варіативність** (середнє σ = {avg_std:.1f}%). "
+                            f"Навантаження погано прогнозується — потрібне гнучке планування змін і "
+                            f"резерв ≥ {avg_std:.0f}%."
+                        )
+
+                    # 4. Вузький пік → дуже типовий день
+                    for name, s in density_stats.items():
+                        if s["peak_pct"] >= 40:
+                            business_lines.append(
+                                f"🎯 **{name}: {s['peak_pct']:.0f}% днів групуються навколо "
+                                f"{s['peak']:+.1f}%** — є чітко виражений «типовий день». "
+                                f"Можна стандартизувати зміни під це значення."
+                            )
+
+                    # 5. Посилання на конкретні аномальні дні
+                    if not density_anomaly_points.empty:
+                        top_anom = density_anomaly_points.copy()
+                        top_anom["deviation"] = (
+                            (top_anom["value"] - top_anom["rolling_median"])
+                            / top_anom["rolling_median"].replace(0, np.nan) * 100
+                        )
+                        top_anom = top_anom.dropna(subset=["deviation"])
+                        if not top_anom.empty:
+                            top_pos = top_anom.sort_values("deviation", ascending=False).head(1)
+                            top_neg = top_anom.sort_values("deviation", ascending=True).head(1)
+
+                            if not top_pos.empty and top_pos.iloc[0]["deviation"] > 5:
+                                r = top_pos.iloc[0]
+                                business_lines.append(
+                                    f"📌 **Найбільший сплеск**: {r['date'].strftime('%d.%m.%Y')} — "
+                                    f"{r['value']:,.0f} операцій (відхилення {r['deviation']:+.1f}% "
+                                    f"від локальної медіани). Деталі — у табі «📈 Динаміка», блок «🔍 Аномальні дні»."
+                                )
+                            if not top_neg.empty and top_neg.iloc[0]["deviation"] < -5:
+                                r = top_neg.iloc[0]
+                                business_lines.append(
+                                    f"📌 **Найбільший провал**: {r['date'].strftime('%d.%m.%Y')} — "
+                                    f"{r['value']:,.0f} операцій (відхилення {r['deviation']:+.1f}% "
+                                    f"від локальної медіани). Можлива причина — свято, збій у подачі заявок "
+                                    f"або неповне внесення даних."
+                                )
+
+                    for line in business_lines:
+                        st.markdown(f"- {line}")
+
         else:
             st.info("Недостатньо даних для побудови кривих щільності.")
     else:
@@ -1433,7 +1638,7 @@ with tab4:
     st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—"), unsafe_allow_html=True)
 
 # ============================================================
-# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ (ОПТИМІЗОВАНО)
+# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ
 # ============================================================
 with tab5:
     st.subheader("🆚 Порівняння двох довільних періодів")
