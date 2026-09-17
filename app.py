@@ -108,7 +108,7 @@ COLOR_BAD = KPO_RED
 
 TOTAL_ROW_SEARCH_RANGE = 10
 DETAIL_SEARCH_RANGE = 30
-FIRST_DAY_COLUMN = 3
+FIRST_DAY_COLUMN = 4
 PER_OP_TF_SEARCH_RANGE = len(OPERATIONS) + 3
 
 logging.basicConfig(level=logging.WARNING)
@@ -274,54 +274,16 @@ def load_data():
 
                 row = values[r]
                 for day_idx in range(days):
-                    # Кожен день займає дві колонки: TRUE + FALSE.
-                    # Наприклад: D/E = 01.09, F/G = 02.09, H/I = 03.09.
-                    col_true = FIRST_DAY_COLUMN + day_idx * 2
-                    col_false = col_true + 1
-
-                    raw_true = row[col_true] if col_true < len(row) else ""
-                    raw_false = row[col_false] if col_false < len(row) else ""
+                    col = FIRST_DAY_COLUMN + day_idx
+                    raw_value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
                     records.append(
                         {
                             "date": date,
                             "operation": operation,
-                            "value": as_number(raw_true) + as_number(raw_false),
-                            "has_data": (
-                                not is_empty_cell(raw_true)
-                                or not is_empty_cell(raw_false)
-                            ),
-                            "year": year,
-                            "month": date.strftime("%Y-%m"),
-                            "month_name": date.strftime("%b %Y"),
-                            "weekday": date.day_name(),
-                            "is_weekend": date.weekday() >= 5,
-                        }
-                    )
-
-            # Додаємо фактичний рядок «Тотал» з Google-таблиці.
-            # Не розраховуємо його як суму операцій, оскільки в таблиці
-            # «Тотал» є окремим джерелом даних і має відображатися 1:1.
-            if total_row_idx is not None:
-                total_row = values[total_row_idx]
-                for day_idx in range(days):
-                    col_true = FIRST_DAY_COLUMN + day_idx * 2
-                    col_false = col_true + 1
-
-                    raw_true = total_row[col_true] if col_true < len(total_row) else ""
-                    raw_false = total_row[col_false] if col_false < len(total_row) else ""
-                    date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
-
-                    records.append(
-                        {
-                            "date": date,
-                            "operation": "Тотал",
-                            "value": as_number(raw_true) + as_number(raw_false),
-                            "has_data": (
-                                not is_empty_cell(raw_true)
-                                or not is_empty_cell(raw_false)
-                            ),
+                            "value": as_number(raw_value),
+                            "has_data": not is_empty_cell(raw_value),
                             "year": year,
                             "month": date.strftime("%Y-%m"),
                             "month_name": date.strftime("%b %Y"),
@@ -347,6 +309,14 @@ def load_data():
 
     df = df_grouped.merge(date_metadata, on="date", how="left")
 
+    total = (
+        df.groupby("date", as_index=False)
+        .agg(value=("value", "sum"), has_data=("has_data", "any"))
+        .assign(operation="Тотал")
+    )
+    total = total.merge(date_metadata, on="date", how="left")
+    df = pd.concat([df, total], ignore_index=True)
+
     tf_df = pd.DataFrame(op_true_false).drop_duplicates(subset=["month", "operation"])
     df = df.merge(tf_df, on=["month", "operation"], how="left")
     df["sum_true"] = df["sum_true"].fillna(0)
@@ -361,19 +331,6 @@ def with_data(df):
     if "has_data" not in df.columns:
         return df
     return df[df["has_data"]]
-
-def calculate_selected_total(df, selected_operations):
-    """
-    Рахує підсумок вибраних операцій без рядка «Тотал».
-    Важливо: спочатку агрегуємо кожну операцію по даті, а вже потім
-    складаємо операції. Це виключає подвійний рахунок і робить результат
-    незалежним від порядку рядків у Google Таблиці.
-    """
-    ops = df[df["operation"].isin(selected_operations) & (df["operation"] != "Тотал")]
-    ops = with_data(ops)
-    if ops.empty:
-        return pd.Series(dtype=float)
-    return ops.groupby("date")["value"].sum()
 
 def calc_peak_min_avg(df):
     daily = with_data(df).groupby("date")["value"].sum()
@@ -716,16 +673,19 @@ if filtered.empty:
     st.warning("За вибраними фільтрами даних немає.")
     st.stop()
 
-# Не обрізаємо поточний місяць системною датою.
-# Dashboard має показувати всі фактично внесені в Google Таблицю дані.
-# Порожні майбутні дні все одно не потрапляють у статистику через with_data().
+today = now_kyiv()
 if period_mode == "За місяцями":
     if len(selected_months) == 1:
         period = pd.Period(selected_months[0])
-        num_days = period.days_in_month
+        if period.start_time <= today <= period.end_time:
+            filtered = filtered[filtered["date"] <= today]
+            num_days = (today - period.start_time).days + 1
+        else:
+            num_days = period.days_in_month
     else:
         num_days = sum(pd.Period(m).days_in_month for m in selected_months)
 else:
+    filtered = filtered[filtered["date"] <= today]
     num_days = (custom_range[1] - custom_range[0]).days + 1
 
 if filtered.empty:
@@ -739,19 +699,7 @@ if filtered_stats.empty:
 # ============================================================
 # 12. Розрахунок метрик
 # ============================================================
-# Підсумок залежить від режиму:
-# - «Тотал» — беремо тільки фактичний рядок «Тотал» з Google Таблиці;
-# - «Вибрані операції» — рахуємо тільки вибрані операції, без рядка «Тотал».
-# Для вибраних операцій агрегуємо по даті перед підсумовуванням.
-if operation_mode == "Тотал":
-    daily_total = filtered_stats.groupby("date")["value"].sum()
-else:
-    daily_total = calculate_selected_total(df[
-        df["year"].isin(selected_years) & df["month"].isin(selected_months)
-    ] if period_mode == "За місяцями" else df[
-        (df["date"] >= custom_range[0]) & (df["date"] <= custom_range[1])
-    ], selected_operations)
-
+daily_total = filtered_stats.groupby("date")["value"].sum()
 total_value = daily_total.sum()
 daily_avg = daily_total.mean() if not daily_total.empty else 0
 
@@ -1176,10 +1124,7 @@ with tab1:
             if not anomaly_points.empty:
                 fig_overview.add_scatter(x=anomaly_points["date"], y=anomaly_points["value"], mode="markers", marker=dict(color=KPO_RED, size=10, symbol="x"), name="Аномалія")
     else:
-        chart_data = (
-            filtered_stats.groupby(["date", "operation"], as_index=False)["value"].sum()
-        )
-        fig_overview = px.line(chart_data, x="date", y="value", color="operation", markers=True, labels={"date": "Дата", "value": "Кількість", "operation": "Операція"})
+        fig_overview = px.line(filtered, x="date", y="value", color="operation", markers=True, labels={"date": "Дата", "value": "Кількість", "operation": "Операція"})
         fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
     fig_overview.update_layout(height=420, hovermode="x unified", margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_overview, use_container_width=True)
@@ -1411,10 +1356,7 @@ with tab3:
 
         if operation_mode != "Тотал" and len(selected_operations) > 1:
             st.subheader("📈 Порівняння вибраних операцій")
-            compare_data = (
-                filtered_stats.groupby(["date", "operation"], as_index=False)["value"].sum()
-            )
-            fig_compare_ops = px.line(compare_data, x="date", y="value", color="operation", markers=True, labels={"date": "Дата", "value": "Кількість", "operation": "Операція"}, title="Динаміка вибраних операцій")
+            fig_compare_ops = px.line(filtered, x="date", y="value", color="operation", markers=True, labels={"date": "Дата", "value": "Кількість", "operation": "Операція"}, title="Динаміка вибраних операцій")
             fig_compare_ops.update_xaxes(tickformat="%d.%m", title_text="Дата")
             fig_compare_ops.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10))
             st.plotly_chart(fig_compare_ops, use_container_width=True)
