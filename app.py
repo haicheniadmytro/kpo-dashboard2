@@ -108,7 +108,7 @@ COLOR_BAD = KPO_RED
 
 TOTAL_ROW_SEARCH_RANGE = 10
 DETAIL_SEARCH_RANGE = 30
-FIRST_DAY_COLUMN = 4
+FIRST_DAY_COLUMN = 3
 PER_OP_TF_SEARCH_RANGE = len(OPERATIONS) + 3
 
 logging.basicConfig(level=logging.WARNING)
@@ -274,16 +274,54 @@ def load_data():
 
                 row = values[r]
                 for day_idx in range(days):
-                    col = FIRST_DAY_COLUMN + day_idx
-                    raw_value = row[col] if col < len(row) else ""
+                    # Кожен день займає дві колонки: TRUE + FALSE.
+                    # Наприклад: D/E = 01.09, F/G = 02.09, H/I = 03.09.
+                    col_true = FIRST_DAY_COLUMN + day_idx * 2
+                    col_false = col_true + 1
+
+                    raw_true = row[col_true] if col_true < len(row) else ""
+                    raw_false = row[col_false] if col_false < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
                     records.append(
                         {
                             "date": date,
                             "operation": operation,
-                            "value": as_number(raw_value),
-                            "has_data": not is_empty_cell(raw_value),
+                            "value": as_number(raw_true) + as_number(raw_false),
+                            "has_data": (
+                                not is_empty_cell(raw_true)
+                                or not is_empty_cell(raw_false)
+                            ),
+                            "year": year,
+                            "month": date.strftime("%Y-%m"),
+                            "month_name": date.strftime("%b %Y"),
+                            "weekday": date.day_name(),
+                            "is_weekend": date.weekday() >= 5,
+                        }
+                    )
+
+            # Додаємо фактичний рядок «Тотал» з Google-таблиці.
+            # Не розраховуємо його як суму операцій, оскільки в таблиці
+            # «Тотал» є окремим джерелом даних і має відображатися 1:1.
+            if total_row_idx is not None:
+                total_row = values[total_row_idx]
+                for day_idx in range(days):
+                    col_true = FIRST_DAY_COLUMN + day_idx * 2
+                    col_false = col_true + 1
+
+                    raw_true = total_row[col_true] if col_true < len(total_row) else ""
+                    raw_false = total_row[col_false] if col_false < len(total_row) else ""
+                    date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
+
+                    records.append(
+                        {
+                            "date": date,
+                            "operation": "Тотал",
+                            "value": as_number(raw_true) + as_number(raw_false),
+                            "has_data": (
+                                not is_empty_cell(raw_true)
+                                or not is_empty_cell(raw_false)
+                            ),
                             "year": year,
                             "month": date.strftime("%Y-%m"),
                             "month_name": date.strftime("%b %Y"),
@@ -308,14 +346,6 @@ def load_data():
     )
 
     df = df_grouped.merge(date_metadata, on="date", how="left")
-
-    total = (
-        df.groupby("date", as_index=False)
-        .agg(value=("value", "sum"), has_data=("has_data", "any"))
-        .assign(operation="Тотал")
-    )
-    total = total.merge(date_metadata, on="date", how="left")
-    df = pd.concat([df, total], ignore_index=True)
 
     tf_df = pd.DataFrame(op_true_false).drop_duplicates(subset=["month", "operation"])
     df = df.merge(tf_df, on=["month", "operation"], how="left")
