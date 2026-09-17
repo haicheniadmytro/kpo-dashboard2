@@ -108,8 +108,26 @@ COLOR_BAD = KPO_RED
 
 TOTAL_ROW_SEARCH_RANGE = 10
 DETAIL_SEARCH_RANGE = 30
-FIRST_DAY_COLUMN = 4
 PER_OP_TF_SEARCH_RANGE = len(OPERATIONS) + 3
+
+# ============================================================
+# 🔑 КОНСТАНТИ СТРУКТУРИ АРКУША (0-індексація gspread)
+# ============================================================
+# Стовпець A (0): назва операції
+# Стовпець B (1): порожньо
+# Стовпець C (2): місячний TRUE (підсумок)
+# Стовпець D (3): місячний FALSE (підсумок)
+# Стовпець E (4): 01.09 TRUE ← перший день
+# Стовпець F (5): 01.09 FALSE
+# Стовпець G (6): 02.09 TRUE
+# Стовпець H (7): 02.09 FALSE
+# Стовпець I (8): 03.09 TRUE
+# ...
+NAME_COL_IDX = 0          # A — назва операції
+TRUE_COL_IDX = 2          # C — місячний TRUE
+FALSE_COL_IDX = 3         # D — місячний FALSE
+FIRST_DAY_COLUMN = 4      # E — перший день (TRUE)
+DAY_COLUMN_STEP = 2       # крок: TRUE, FALSE, TRUE, FALSE, ...
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -170,6 +188,15 @@ def get_client():
     )
     return gspread.authorize(credentials)
 
+def _find_total_row(values, header_row):
+    """
+    Шукає рядок «Тотал» ТІЛЬКИ за текстовою міткою у стовпці A (індекс 0).
+    """
+    for r in range(header_row + 1, min(header_row + TOTAL_ROW_SEARCH_RANGE, len(values))):
+        if len(values[r]) > NAME_COL_IDX and normalize_operation(values[r][NAME_COL_IDX]) == "Тотал":
+            return r
+    return None
+
 @st.cache_data(ttl=300, show_spinner="Завантаження даних з Google Таблиці…")
 def load_data():
     client = get_client()
@@ -186,7 +213,7 @@ def load_data():
             continue
 
         sheet_year = 2000 + int(sheet_name)
-        first_col = [row[0] if row else "" for row in values]
+        first_col = [row[NAME_COL_IDX] if row and len(row) > NAME_COL_IDX else "" for row in values]
 
         month_rows = []
         for idx, value in enumerate(first_col):
@@ -198,36 +225,30 @@ def load_data():
             month_key = f"{year}-{month:02d}"
             month_label = f"{month:02d}.{year}"
 
-            total_row_idx = None
-            try:
-                named_range = worksheet.range("Тотал")
-                if named_range:
-                    total_row_idx = named_range[0].row - 1
-            except Exception:
-                for r in range(header_row + 1, min(header_row + TOTAL_ROW_SEARCH_RANGE, len(values))):
-                    if len(values[r]) > 0 and normalize_operation(values[r][0]) == "Тотал":
-                        total_row_idx = r
-                        break
+            total_row_idx = _find_total_row(values, header_row)
 
             if total_row_idx is not None:
-                sum_true = as_number(values[total_row_idx][1]) if len(values[total_row_idx]) > 1 else 0
-                sum_false = as_number(values[total_row_idx][2]) if len(values[total_row_idx]) > 2 else 0
+                row_total = values[total_row_idx]
+                sum_true = as_number(row_total[TRUE_COL_IDX]) if len(row_total) > TRUE_COL_IDX else 0
+                sum_false = as_number(row_total[FALSE_COL_IDX]) if len(row_total) > FALSE_COL_IDX else 0
                 op_true_false.append({
                     "month": month_key,
                     "operation": "Тотал",
                     "sum_true": sum_true,
-                    "sum_false": sum_false
+                    "sum_false": sum_false,
                 })
 
+                # --- TRUE/FALSE по операціях ---
                 per_op_tf_found = set()
                 for r in range(total_row_idx + 1, min(total_row_idx + 1 + PER_OP_TF_SEARCH_RANGE, len(values))):
-                    cell_a = values[r][0] if len(values[r]) > 0 else ""
+                    row_r = values[r]
+                    cell_a = row_r[NAME_COL_IDX] if len(row_r) > NAME_COL_IDX else ""
                     op_name = normalize_operation(cell_a)
                     op_name = ALIASES.get(op_name, op_name)
                     if op_name not in OPERATIONS or op_name in per_op_tf_found:
                         continue
-                    op_sum_true = as_number(values[r][1]) if len(values[r]) > 1 else 0
-                    op_sum_false = as_number(values[r][2]) if len(values[r]) > 2 else 0
+                    op_sum_true = as_number(row_r[TRUE_COL_IDX]) if len(row_r) > TRUE_COL_IDX else 0
+                    op_sum_false = as_number(row_r[FALSE_COL_IDX]) if len(row_r) > FALSE_COL_IDX else 0
                     op_true_false.append({
                         "month": month_key,
                         "operation": op_name,
@@ -247,9 +268,11 @@ def load_data():
                     f"⚠️ Аркуш «{sheet_name}», {month_label}: не знайдено рядок «Тотал»."
                 )
 
+            # --- Деталізація: шукаємо перший рядок, де в стовпці A є назва операції ---
             detail_start = None
             for r in range(header_row + 1, min(header_row + DETAIL_SEARCH_RANGE, len(values))):
-                if len(values[r]) > 3 and normalize_operation(values[r][3]) in OPERATIONS:
+                row_r = values[r]
+                if len(row_r) > NAME_COL_IDX and normalize_operation(row_r[NAME_COL_IDX]) in OPERATIONS:
                     detail_start = r
                     break
 
@@ -265,32 +288,31 @@ def load_data():
                 if r >= len(values):
                     break
 
-                raw_operation = values[r][3] if len(values[r]) > 3 else ""
+                row = values[r]
+                raw_operation = row[NAME_COL_IDX] if len(row) > NAME_COL_IDX else ""
                 operation = normalize_operation(raw_operation)
                 operation = ALIASES.get(operation, operation)
 
                 if operation not in OPERATIONS:
                     break
 
-                row = values[r]
                 for day_idx in range(days):
-                    col = FIRST_DAY_COLUMN + day_idx
+                    # 🔑 Беремо ТІЛЬКИ TRUE-стовпець для кожного дня (крок = 2)
+                    col = FIRST_DAY_COLUMN + day_idx * DAY_COLUMN_STEP
                     raw_value = row[col] if col < len(row) else ""
                     date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
 
-                    records.append(
-                        {
-                            "date": date,
-                            "operation": operation,
-                            "value": as_number(raw_value),
-                            "has_data": not is_empty_cell(raw_value),
-                            "year": year,
-                            "month": date.strftime("%Y-%m"),
-                            "month_name": date.strftime("%b %Y"),
-                            "weekday": date.day_name(),
-                            "is_weekend": date.weekday() >= 5,
-                        }
-                    )
+                    records.append({
+                        "date": date,
+                        "operation": operation,
+                        "value": as_number(raw_value),
+                        "has_data": not is_empty_cell(raw_value),
+                        "year": year,
+                        "month": date.strftime("%Y-%m"),
+                        "month_name": date.strftime("%b %Y"),
+                        "weekday": date.day_name(),
+                        "is_weekend": date.weekday() >= 5,
+                    })
 
     df_raw = pd.DataFrame(records)
 
@@ -424,10 +446,6 @@ def gaussian_kde_np(data, x_grid, bandwidth=None):
     return density
 
 def analyze_density(group_names, dev_data):
-    """
-    Обчислює статистичні характеристики кожної кривої щільності
-    на основі реальних даних поточного періоду.
-    """
     stats = {}
     for name, data in zip(group_names, dev_data):
         if data is None or len(data) < 2:
@@ -1429,8 +1447,7 @@ with tab4:
         mean_all = daily_totals["value"].mean()
         daily_totals["dev_all"] = (daily_totals["value"] - mean_all) / mean_all * 100
         weekday_mask = daily_totals["is_weekend"] == False
-        weekend_mask = daily_totals["is_weekend"] == True
-        mean_weekday = daily_totals.loc[weekday_mask, "value"].mean() if weekday_mask.any() else None
+        weekend_mask = daily_totals["is_weekend"] == True        mean_weekday = daily_totals.loc[weekday_mask, "value"].mean() if weekday_mask.any() else None
         mean_weekend = daily_totals.loc[weekend_mask, "value"].mean() if weekend_mask.any() else None
         daily_totals["dev_weekday"] = None
         daily_totals.loc[weekday_mask, "dev_weekday"] = ((daily_totals.loc[weekday_mask, "value"] - mean_weekday) / mean_weekday * 100) if mean_weekday is not None and mean_weekday != 0 else None
