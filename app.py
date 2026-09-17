@@ -703,19 +703,16 @@ if filtered.empty:
     st.warning("За вибраними фільтрами даних немає.")
     st.stop()
 
-today = now_kyiv()
+# Не обрізаємо поточний місяць системною датою.
+# Dashboard має показувати всі фактично внесені в Google Таблицю дані.
+# Порожні майбутні дні все одно не потрапляють у статистику через with_data().
 if period_mode == "За місяцями":
     if len(selected_months) == 1:
         period = pd.Period(selected_months[0])
-        if period.start_time <= today <= period.end_time:
-            filtered = filtered[filtered["date"] <= today]
-            num_days = (today - period.start_time).days + 1
-        else:
-            num_days = period.days_in_month
+        num_days = period.days_in_month
     else:
         num_days = sum(pd.Period(m).days_in_month for m in selected_months)
 else:
-    filtered = filtered[filtered["date"] <= today]
     num_days = (custom_range[1] - custom_range[0]).days + 1
 
 if filtered.empty:
