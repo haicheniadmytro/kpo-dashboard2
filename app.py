@@ -1447,8 +1447,8 @@ with tab4:
         mean_all = daily_totals["value"].mean()
         daily_totals["dev_all"] = (daily_totals["value"] - mean_all) / mean_all * 100
         weekday_mask = daily_totals["is_weekend"] == False
-        weekend_mask = daily_totals["is_weekend"] == True        mean_weekday = daily_totals.loc[weekday_mask, "value"].mean() if weekday_mask.any() else None
-        mean_weekend = daily_totals.loc[weekend_mask, "value"].mean() if weekend_mask.any() else None
+        weekend_mask = daily_totals["is_weekend"] == True 
+        mean_weekday = daily_totals.loc[weekday_mask, "value"].mean() if weekday_mask.any() else None
         daily_totals["dev_weekday"] = None
         daily_totals.loc[weekday_mask, "dev_weekday"] = ((daily_totals.loc[weekday_mask, "value"] - mean_weekday) / mean_weekday * 100) if mean_weekday is not None and mean_weekday != 0 else None
         daily_totals["dev_weekend"] = None
