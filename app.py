@@ -193,10 +193,23 @@ def _find_month_blocks(values, sheet_year):
     return [tuple(b) for b in blocks]
 
 def _find_total_row(values, start, end):
-    """Шукає рядок з написом «Тотал». Повертає (row_idx, label_col)."""
+    """
+    Шукає рядок з написом «Тотал» — тобто рядок підсумків, де далі йдуть
+    операції в тому самому стовпці.
+
+    «Тотал» може з'являтись двічі в одному блоці: як заголовок пари колонок
+    TRUE/FALSE в шапці таблиці (не в колонці A) і як справжній підсумковий
+    рядок (завжди в колонці A, там само, де потім ідуть назви операцій).
+    Тому спершу шукаємо строго в колонці A, і лише якщо там нічого немає —
+    розширюємо пошук на сусідні колонки (для іншої розкладки таблиці).
+    """
     for r in range(start, end):
         row = values[r]
-        for c in range(min(len(row), 6)):
+        if row and normalize_operation(row[0]).lower() == "тотал":
+            return r, 0
+    for r in range(start, end):
+        row = values[r]
+        for c in range(1, min(len(row), 6)):
             if normalize_operation(row[c]).lower() == "тотал":
                 return r, c
     return None, None
