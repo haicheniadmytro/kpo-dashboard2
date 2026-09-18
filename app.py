@@ -106,11 +106,6 @@ COLOR_GOOD = KPO_GREEN
 COLOR_WARN = KPO_AMBER
 COLOR_BAD = KPO_RED
 
-TOTAL_ROW_SEARCH_RANGE = 10
-DETAIL_SEARCH_RANGE = 30
-FIRST_DAY_COLUMN = 4
-PER_OP_TF_SEARCH_RANGE = len(OPERATIONS) + 3
-
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
@@ -126,6 +121,17 @@ def now_kyiv_exact() -> pd.Timestamp:
 # ============================================================
 # 6. Парсинг комірок
 # ============================================================
+
+# Заголовок дня: 01.09, 1.9, 01/09, 01.09.2026
+DAY_HEADER_RE = re.compile(r"^\s*(\d{1,2})\s*[./\-]\s*(\d{1,2})\s*(?:[./\-]\s*\d{2,4})?\s*$")
+
+# Символи, які Google Sheets любить підсовувати замість звичайних
+_CHAR_FIXES = {
+    "\xa0": " ", "\u202f": " ", "\u2007": " ",
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-",
+    "\u2019": "'", "\u02bc": "'", "`": "'",
+}
+
 def is_empty_cell(value) -> bool:
     if value is None:
         return True
@@ -133,31 +139,106 @@ def is_empty_cell(value) -> bool:
         return False
     return str(value).strip() == ""
 
+def normalize_operation(value):
+    """Нормалізує назву операції: NBSP, довгі тире, апострофи, подвійні пробіли."""
+    if not isinstance(value, str):
+        return ""
+    for bad, good in _CHAR_FIXES.items():
+        value = value.replace(bad, good)
+    return " ".join(value.strip().split())
+
 def as_number(value):
+    """Дістає число з комірки. Повертає (число, розпізнано_чи)."""
     if is_empty_cell(value):
-        return 0.0
-    val_str = str(value).replace("\xa0", "").replace(" ", "").replace(",", ".")
-    match = re.search(r"^-?\d+(?:[.,]\d+)?", val_str)
-    if match:
-        try:
-            return float(match.group(0).replace(",", "."))
-        except ValueError:
-            logger.warning(f"Не вдалося перетворити '{val_str}' на число")
-            return 0.0
-    logger.warning(f"Не вдалося розпізнати число в '{val_str}'")
-    return 0.0
+        return 0.0, True
+    val_str = str(value)
+    for bad, good in _CHAR_FIXES.items():
+        val_str = val_str.replace(bad, good)
+    val_str = val_str.replace(" ", "").replace("'", "")
+    # шукаємо число будь-де в рядку, не тільки на початку: "+4", "~4", "4шт"
+    match = re.search(r"-?\d+(?:[.,]\d+)?", val_str)
+    if not match:
+        logger.warning(f"Не вдалося розпізнати число в '{val_str}'")
+        return 0.0, False
+    try:
+        return float(match.group(0).replace(",", ".")), True
+    except ValueError:
+        logger.warning(f"Не вдалося перетворити '{val_str}' на число")
+        return 0.0, False
 
 def parse_month_header(value, sheet_year):
     if not isinstance(value, str):
         return None
+    value = normalize_operation(value)
     match = re.match(
-        r"^\s*(Січень|Лютий|Березень|Квітень|Травень|Червень|"
-        r"Липень|Серпень|Вересень|Жовтень|Листопад|Грудень)\s+\d{2}\s*$",
+        r"^(Січень|Лютий|Березень|Квітень|Травень|Червень|"
+        r"Липень|Серпень|Вересень|Жовтень|Листопад|Грудень)\s+(\d{2,4})$",
         value,
     )
     if not match:
         return None
-    return MONTHS[match.group(1)], sheet_year
+    year_part = match.group(2)
+    year = int(year_part) if len(year_part) == 4 else 2000 + int(year_part)
+    return MONTHS[match.group(1)], year
+
+def _find_month_blocks(values, sheet_year):
+    """Повертає [(header_row, month, year, block_end), ...] — межі кожного місячного блоку."""
+    blocks = []
+    for idx, row in enumerate(values):
+        parsed = parse_month_header(row[0] if row else "", sheet_year)
+        if parsed:
+            blocks.append([idx, parsed[0], parsed[1], None])
+    for i, block in enumerate(blocks):
+        block[3] = blocks[i + 1][0] if i + 1 < len(blocks) else len(values)
+    return [tuple(b) for b in blocks]
+
+def _find_total_row(values, start, end):
+    """Шукає рядок з написом «Тотал». Повертає (row_idx, label_col)."""
+    for r in range(start, end):
+        row = values[r]
+        for c in range(min(len(row), 6)):
+            if normalize_operation(row[c]).lower() == "тотал":
+                return r, c
+    return None, None
+
+def _detect_day_columns(values, start, end, month):
+    """
+    Знаходить рядок із заголовками днів (01.09, 02.09, ...) і повертає
+    (header_row, [(col, day), ...]) для того рядка, де таких заголовків найбільше.
+    """
+    best = None
+    for r in range(start, min(start + 8, end)):
+        found = []
+        for c, cell in enumerate(values[r]):
+            match = DAY_HEADER_RE.match(str(cell))
+            if not match:
+                continue
+            day, mon = int(match.group(1)), int(match.group(2))
+            if mon == month and 1 <= day <= 31:
+                found.append((c, day))
+        if found and (best is None or len(found) > len(best[1])):
+            best = (r, sorted(found))
+    return best if best else (None, [])
+
+def _build_day_spans(day_cols):
+    """
+    Перетворює [(col, day)] у [(day, col, span)], де span — скільки колонок
+    займає день (1 = просто кількість, 2 = пара TRUE/FALSE).
+    """
+    if not day_cols:
+        return []
+    gaps = [day_cols[i + 1][0] - day_cols[i][0] for i in range(len(day_cols) - 1)]
+    default_span = int(np.median(gaps)) if gaps else 1
+    default_span = max(1, min(default_span, 2))
+
+    spans = []
+    for i, (col, day) in enumerate(day_cols):
+        if i + 1 < len(day_cols):
+            span = day_cols[i + 1][0] - col
+        else:
+            span = default_span
+        spans.append((day, col, max(1, min(span, 2))))
+    return spans
 
 # ============================================================
 # 7. Робота з Google Sheets
@@ -176,151 +257,162 @@ def load_data():
     spreadsheet = client.open_by_key(SPREADSHEET_ID)
 
     records = []
-    op_true_false = []
     warnings = []
+    unknown_ops = {}          # назва -> список місяців, де зустрілась
+    sheet_month_totals = {}   # month_key -> (true, false) з рядка «Тотал»
 
     for sheet_name in SHEETS:
-        worksheet = spreadsheet.worksheet(sheet_name)
+        try:
+            worksheet = spreadsheet.worksheet(sheet_name)
+        except Exception:
+            continue
         values = worksheet.get_all_values()
         if not values:
             continue
 
         sheet_year = 2000 + int(sheet_name)
-        first_col = [row[0] if row else "" for row in values]
 
-        month_rows = []
-        for idx, value in enumerate(first_col):
-            parsed = parse_month_header(value, sheet_year)
-            if parsed:
-                month_rows.append((idx, parsed[0], parsed[1]))
-
-        for header_row, month, year in month_rows:
+        for header_row, month, year, block_end in _find_month_blocks(values, sheet_year):
             month_key = f"{year}-{month:02d}"
             month_label = f"{month:02d}.{year}"
+            where = f"аркуш «{sheet_name}», {month_label}"
 
-            total_row_idx = None
-            try:
-                named_range = worksheet.range("Тотал")
-                if named_range:
-                    total_row_idx = named_range[0].row - 1
-            except Exception:
-                for r in range(header_row + 1, min(header_row + TOTAL_ROW_SEARCH_RANGE, len(values))):
-                    if len(values[r]) > 0 and normalize_operation(values[r][0]) == "Тотал":
-                        total_row_idx = r
-                        break
+            total_row_idx, label_col = _find_total_row(values, header_row, block_end)
+            if total_row_idx is None:
+                warnings.append(f"⚠️ {where}: не знайдено рядок «Тотал» — блок пропущено.")
+                continue
 
-            if total_row_idx is not None:
-                sum_true = as_number(values[total_row_idx][1]) if len(values[total_row_idx]) > 1 else 0
-                sum_false = as_number(values[total_row_idx][2]) if len(values[total_row_idx]) > 2 else 0
-                op_true_false.append({
-                    "month": month_key,
-                    "operation": "Тотал",
-                    "sum_true": sum_true,
-                    "sum_false": sum_false
-                })
-
-                per_op_tf_found = set()
-                for r in range(total_row_idx + 1, min(total_row_idx + 1 + PER_OP_TF_SEARCH_RANGE, len(values))):
-                    cell_a = values[r][0] if len(values[r]) > 0 else ""
-                    op_name = normalize_operation(cell_a)
-                    op_name = ALIASES.get(op_name, op_name)
-                    if op_name not in OPERATIONS or op_name in per_op_tf_found:
-                        continue
-                    op_sum_true = as_number(values[r][1]) if len(values[r]) > 1 else 0
-                    op_sum_false = as_number(values[r][2]) if len(values[r]) > 2 else 0
-                    op_true_false.append({
-                        "month": month_key,
-                        "operation": op_name,
-                        "sum_true": op_sum_true,
-                        "sum_false": op_sum_false,
-                    })
-                    per_op_tf_found.add(op_name)
-
-                missing_tf_ops = [op for op in OPERATIONS if op not in per_op_tf_found]
-                if missing_tf_ops:
-                    warnings.append(
-                        f"⚠️ Аркуш «{sheet_name}», {month_label}: не знайдено TRUE/FALSE дані "
-                        f"для операцій: {', '.join(missing_tf_ops)}."
-                    )
-            else:
+            day_header_row, day_cols = _detect_day_columns(values, header_row, block_end, month)
+            if not day_cols:
                 warnings.append(
-                    f"⚠️ Аркуш «{sheet_name}», {month_label}: не знайдено рядок «Тотал»."
-                )
-
-            detail_start = None
-            for r in range(header_row + 1, min(header_row + DETAIL_SEARCH_RANGE, len(values))):
-                if len(values[r]) > 3 and normalize_operation(values[r][3]) in OPERATIONS:
-                    detail_start = r
-                    break
-
-            if detail_start is None:
-                warnings.append(
-                    f"⚠️ Аркуш «{sheet_name}», {month_label}: не знайдено таблицю деталізації."
+                    f"⚠️ {where}: не знайдено заголовків днів (очікується формат «01.{month:02d}») "
+                    f"— блок пропущено."
                 )
                 continue
 
-            days = pd.Period(f"{year}-{month:02d}").days_in_month
+            day_spans = _build_day_spans(day_cols)
+            first_day_col = day_spans[0][1]
 
-            for r in range(detail_start, len(values)):
-                if r >= len(values):
-                    break
+            # Колонки місячного підсумку: між назвою операції та першим днем.
+            # Порядок позиційний: перша = погоджено (TRUE), друга = відмова (FALSE).
+            sum_cols = [c for c in range(label_col + 1, first_day_col)][:2]
 
-                raw_operation = values[r][3] if len(values[r]) > 3 else ""
-                operation = normalize_operation(raw_operation)
-                operation = ALIASES.get(operation, operation)
+            expected_days = pd.Period(month_key).days_in_month
+            if len(day_spans) != expected_days:
+                warnings.append(
+                    f"ℹ️ {where}: знайдено {len(day_spans)} колонок днів із {expected_days}. "
+                    f"Дані читаються лише за знайдені дні."
+                )
 
-                if operation not in OPERATIONS:
-                    break
+            # --- Місячний «Тотал» із таблиці (для звірки) ---
+            total_row = values[total_row_idx]
+            if len(sum_cols) == 2:
+                t_true, _ = as_number(total_row[sum_cols[0]] if sum_cols[0] < len(total_row) else "")
+                t_false, _ = as_number(total_row[sum_cols[1]] if sum_cols[1] < len(total_row) else "")
+                sheet_month_totals[month_key] = (t_true, t_false)
 
+            # --- Рядки операцій під «Тоталом» ---
+            rows_read = 0
+            for r in range(total_row_idx + 1, block_end):
                 row = values[r]
-                for day_idx in range(days):
-                    col = FIRST_DAY_COLUMN + day_idx
-                    raw_value = row[col] if col < len(row) else ""
-                    date = pd.Timestamp(year=year, month=month, day=day_idx + 1)
+                label = normalize_operation(row[label_col] if label_col < len(row) else "")
 
-                    records.append(
-                        {
-                            "date": date,
-                            "operation": operation,
-                            "value": as_number(raw_value),
-                            "has_data": not is_empty_cell(raw_value),
-                            "year": year,
-                            "month": date.strftime("%Y-%m"),
-                            "month_name": date.strftime("%b %Y"),
-                            "weekday": date.day_name(),
-                            "is_weekend": date.weekday() >= 5,
-                        }
-                    )
+                if not label:
+                    break                       # порожня назва = кінець таблиці
+                if label.lower() == "тотал":
+                    continue                    # службовий рядок
+                if parse_month_header(label, sheet_year):
+                    break                        # почався наступний місяць
 
-    df_raw = pd.DataFrame(records)
+                operation = ALIASES.get(label, label)
+                if operation not in OPERATIONS:
+                    unknown_ops.setdefault(operation, []).append(month_label)
 
-    if df_raw.empty:
+                rows_read += 1
+                for day, col, span in day_spans:
+                    raw_true = row[col] if col < len(row) else ""
+                    raw_false = row[col + 1] if (span >= 2 and col + 1 < len(row)) else ""
+
+                    val_true, ok_true = as_number(raw_true)
+                    val_false, ok_false = as_number(raw_false)
+
+                    if not ok_true or not ok_false:
+                        bad = raw_true if not ok_true else raw_false
+                        warnings.append(
+                            f"⚠️ {where}, {operation}, {day:02d}.{month:02d}: "
+                            f"не розпізнано число в «{bad}» — враховано як 0."
+                        )
+
+                    date = pd.Timestamp(year=year, month=month, day=day)
+                    records.append({
+                        "date": date,
+                        "operation": operation,
+                        "value": val_true + val_false,
+                        "sum_true": val_true,
+                        "sum_false": val_false,
+                        "has_data": not (is_empty_cell(raw_true) and is_empty_cell(raw_false)),
+                    })
+
+            if rows_read == 0:
+                warnings.append(f"⚠️ {where}: під рядком «Тотал» не знайдено жодної операції.")
+
+    if not records:
         raise ValueError("Не знайдено деталізованих даних у Google Таблиці.")
 
+    df_raw = pd.DataFrame(records)
     df_raw["date"] = pd.to_datetime(df_raw["date"])
 
-    date_metadata = df_raw[["date", "year", "month", "month_name", "weekday", "is_weekend"]].drop_duplicates("date")
-
-    df_grouped = (
+    # --- Агрегація по (дата, операція) ---
+    df = (
         df_raw.groupby(["date", "operation"], as_index=False)
-        .agg(value=("value", "sum"), has_data=("has_data", "any"))
-        .sort_values(["date", "operation"])
+        .agg(
+            value=("value", "sum"),
+            sum_true=("sum_true", "sum"),
+            sum_false=("sum_false", "sum"),
+            has_data=("has_data", "any"),
+        )
     )
 
-    df = df_grouped.merge(date_metadata, on="date", how="left")
-
+    # --- Рядок «Тотал» = сума операцій за день ---
     total = (
         df.groupby("date", as_index=False)
-        .agg(value=("value", "sum"), has_data=("has_data", "any"))
+        .agg(
+            value=("value", "sum"),
+            sum_true=("sum_true", "sum"),
+            sum_false=("sum_false", "sum"),
+            has_data=("has_data", "any"),
+        )
         .assign(operation="Тотал")
     )
-    total = total.merge(date_metadata, on="date", how="left")
     df = pd.concat([df, total], ignore_index=True)
 
-    tf_df = pd.DataFrame(op_true_false).drop_duplicates(subset=["month", "operation"])
-    df = df.merge(tf_df, on=["month", "operation"], how="left")
-    df["sum_true"] = df["sum_true"].fillna(0)
-    df["sum_false"] = df["sum_false"].fillna(0)
+    # --- Метадані дат ---
+    df["year"] = df["date"].dt.year
+    df["month"] = df["date"].dt.strftime("%Y-%m")
+    df["month_name"] = df["date"].dt.strftime("%b %Y")
+    df["weekday"] = df["date"].dt.day_name()
+    df["is_weekend"] = df["date"].dt.weekday >= 5
+    df = df.sort_values(["date", "operation"]).reset_index(drop=True)
+
+    # --- Попередження про невідомі операції (не з хардкоду OPERATIONS) ---
+    for op, months in unknown_ops.items():
+        warnings.append(
+            f"🆕 Операція «{op}» відсутня у списку OPERATIONS "
+            f"({', '.join(sorted(set(months)))}). Її враховано в розрахунках — "
+            f"додай назву в OPERATIONS, щоб вона з'явилась у фільтрах у правильному порядку."
+        )
+
+    # --- Звірка з рядком «Тотал» таблиці ---
+    computed = df[df["operation"] == "Тотал"].groupby("month")["value"].sum()
+    for month_key, (t_true, t_false) in sheet_month_totals.items():
+        sheet_sum = t_true + t_false
+        calc_sum = float(computed.get(month_key, 0))
+        if sheet_sum > 0 and abs(calc_sum - sheet_sum) > 0.5:
+            warnings.append(
+                f"❗ {month_key}: сума по днях = {calc_sum:,.0f}, рядок «Тотал» = {sheet_sum:,.0f} "
+                f"(різниця {calc_sum - sheet_sum:+,.0f}). Перевір, чи всі рядки операцій "
+                f"потрапляють у діапазон блоку."
+            )
 
     return df, warnings
 
@@ -631,7 +723,9 @@ else:
     selected_months = sorted({d.strftime("%Y-%m") for d in pd.date_range(custom_range[0], custom_range[1], freq="D")})
 
 operation_mode = st.sidebar.radio("Режим показу", options=["Тотал", "Вибрані операції"], index=0)
-all_ops = [op for op in OPERATIONS if op in df["operation"].unique()]
+_present_ops = set(df["operation"].unique()) - {"Тотал"}
+all_ops = [op for op in OPERATIONS if op in _present_ops]
+all_ops += sorted(_present_ops - set(all_ops))
 if operation_mode == "Тотал":
     selected_operations = ["Тотал"]
 else:
@@ -717,54 +811,36 @@ busiest_weekday, busiest_weekday_val = calc_busiest_weekday(filtered)
 busiest_op, busiest_op_val = calc_busiest_operation(filtered)
 std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
-# --- Коефіцієнт погоджень (тільки для повних місяців) ---
-if period_mode == "За місяцями":
-    tf_filtered = filtered[["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
-else:
-    start_date, end_date = custom_range
-    full_months = []
-    current = start_date
-    while current <= end_date:
-        month_start = current.replace(day=1)
-        month_end = (month_start + pd.offsets.MonthEnd(1)).normalize()
-        if month_start >= start_date and month_end <= end_date:
-            full_months.append(current.strftime("%Y-%m"))
-        current = month_end + pd.Timedelta(days=1)
-    if full_months:
-        tf_filtered = df[df["month"].isin(full_months) & (df["operation"].isin(selected_operations) if operation_mode != "Тотал" else df["operation"] == "Тотал")][
-            ["month", "operation", "sum_true", "sum_false"]
-        ].drop_duplicates()
-    else:
-        tf_filtered = pd.DataFrame()
-
-if not tf_filtered.empty:
-    sum_true_total = tf_filtered["sum_true"].sum()
-    sum_false_total = tf_filtered["sum_false"].sum()
+# --- Коефіцієнт погоджень ---
+# TRUE/FALSE тепер зберігаються в кожному рядку (дата, операція), а не одним
+# значенням на місяць, тому рахуємо напряму з filtered_stats: працює для
+# будь-якого діапазону дат і будь-якого набору вибраних операцій, без
+# обмеження "лише повні місяці".
+if not filtered_stats.empty:
+    sum_true_total = float(filtered_stats["sum_true"].sum())
+    sum_false_total = float(filtered_stats["sum_false"].sum())
     total_ratio = sum_true_total + sum_false_total
     approval_rate_val = (sum_true_total / total_ratio * 100) if total_ratio > 0 else 0
     approval_rate_str = f"{approval_rate_val:.1f}%" if total_ratio > 0 else "—"
-    approval_rate_available = True
+    approval_rate_available = total_ratio > 0
 else:
+    sum_true_total = sum_false_total = 0.0
     approval_rate_val = 0
-    approval_rate_str = "— (немає повних місяців)"
+    approval_rate_str = "—"
     approval_rate_available = False
 
-# --- Коефіцієнт погоджень по операціях ---
+# --- Коефіцієнт погоджень по операціях (той самий період, всі операції) ---
 if period_mode == "За місяцями":
     period_mask = df["year"].isin(selected_years) & df["month"].isin(selected_months)
 else:
-    if full_months:
-        period_mask = df["month"].isin(full_months)
-    else:
-        period_mask = pd.Series(False, index=df.index)
+    period_mask = (df["date"] >= custom_range[0]) & (df["date"] <= custom_range[1])
+period_mask &= df["date"] <= today
 
-tf_by_op_all = df[period_mask & (df["operation"] != "Тотал")][
-    ["month", "operation", "sum_true", "sum_false"]
-].drop_duplicates()
+period_ops = with_data(df[period_mask & (df["operation"] != "Тотал")])
 
 approval_by_op = pd.DataFrame(columns=["operation", "sum_true", "sum_false", "total", "approval_rate"])
-if not tf_by_op_all.empty:
-    approval_by_op = tf_by_op_all.groupby("operation", as_index=False)[["sum_true", "sum_false"]].sum()
+if not period_ops.empty:
+    approval_by_op = period_ops.groupby("operation", as_index=False)[["sum_true", "sum_false"]].sum()
     approval_by_op["total"] = approval_by_op["sum_true"] + approval_by_op["sum_false"]
     approval_by_op = approval_by_op[approval_by_op["total"] > 0].copy()
     approval_by_op["approval_rate"] = (approval_by_op["sum_true"] / approval_by_op["total"] * 100).round(1)
@@ -985,7 +1061,7 @@ with tab1:
         st.markdown(custom_metric(
             "Коефіцієнт погоджень",
             approval_rate_str,
-            f"Частка TRUE (погоджено) від TRUE+FALSE. {'Доступно лише для повних календарних місяців.' if period_mode != 'За місяцями' else ''} "
+            f"Частка TRUE (погоджено) від TRUE+FALSE за вибраний період і вибрані операції. "
             f"🟢 ≥{APPROVAL_GOOD_THRESHOLD}% 🟡 {APPROVAL_WARN_THRESHOLD}-{APPROVAL_GOOD_THRESHOLD}% 🔴 <{APPROVAL_WARN_THRESHOLD}%",
             color=approval_rate_color(approval_rate_val if approval_rate_available else None),
         ), unsafe_allow_html=True)
@@ -1219,7 +1295,7 @@ with tab3:
     st.subheader("🧩 Аналіз операцій")
     st.subheader("✅ Коефіцієнт погоджень по операціях")
     if not approval_by_op.empty:
-        tf_total = df[period_mask & (df["operation"] == "Тотал")][["month", "sum_true", "sum_false"]].drop_duplicates()
+        tf_total = df[period_mask & (df["operation"] == "Тотал")]
         total_true = tf_total["sum_true"].sum()
         total_false = tf_total["sum_false"].sum()
         total_ratio_ops = total_true + total_false
@@ -1285,12 +1361,15 @@ with tab3:
                 hide_index=True,
             )
     else:
-        st.info("Немає даних для розрахунку коефіцієнта погоджень (потрібні повні календарні місяці).")
+        st.info("Немає даних для розрахунку коефіцієнта погоджень за вибраний період.")
 
     st.subheader("🌡️ Теплова карта коефіцієнта погоджень (Операція × Місяць)")
-    tf_heat = df[period_mask][["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
+    tf_heat = (
+        df[period_mask]
+        .groupby(["month", "operation"], as_index=False)[["sum_true", "sum_false"]]
+        .sum()
+    )
     if not tf_heat.empty:
-        tf_heat = tf_heat.copy()
         tf_heat["total"] = tf_heat["sum_true"] + tf_heat["sum_false"]
         tf_heat = tf_heat[tf_heat["total"] > 0]
         if not tf_heat.empty:
@@ -1321,7 +1400,7 @@ with tab3:
             st.plotly_chart(fig_approval_heat, use_container_width=True)
             st.caption("🔴 <70% 🟡 70-85% 🟢 >85% — кольорова шкала неперервна.")
         else:
-            st.info("Немає даних для теплової карти (немає повних місяців).")
+            st.info("Немає даних для теплової карти за вибраний період.")
     else:
         st.info("Немає даних для теплової карти.")
 
@@ -1680,33 +1759,17 @@ with tab5:
         def build_period_metrics(date_range, ops):
             start, end = date_range
             mask = (df["date"] >= start) & (df["date"] <= end) & (df["operation"].isin(ops))
-            scoped = df[mask]
-            scoped_stats = with_data(scoped)
+            scoped_stats = with_data(df[mask])
             if scoped_stats.empty:
                 return None
             daily = scoped_stats.groupby("date")["value"].sum()
-            total = daily.sum()
-            avg = daily.mean()
-            peak = daily.max()
-            full_months = []
-            current = start
-            while current <= end:
-                month_start = current.replace(day=1)
-                month_end = (month_start + pd.offsets.MonthEnd(1)).normalize()
-                if month_start >= start and month_end <= end:
-                    full_months.append(current.strftime("%Y-%m"))
-                current = month_end + pd.Timedelta(days=1)
-            if full_months:
-                tf = scoped[scoped["month"].isin(full_months)][["month", "operation", "sum_true", "sum_false"]].drop_duplicates()
-                s_true = tf["sum_true"].sum()
-                s_false = tf["sum_false"].sum()
-                rate = (s_true / (s_true + s_false) * 100) if (s_true + s_false) > 0 else None
-            else:
-                rate = None
+            s_true = float(scoped_stats["sum_true"].sum())
+            s_false = float(scoped_stats["sum_false"].sum())
+            rate = (s_true / (s_true + s_false) * 100) if (s_true + s_false) > 0 else None
             return {
-                "total": total,
-                "avg": avg,
-                "peak": peak,
+                "total": daily.sum(),
+                "avg": daily.mean(),
+                "peak": daily.max(),
                 "rate": rate,
                 "days": (end - start).days + 1,
             }
@@ -1725,7 +1788,7 @@ with tab5:
                 {"Метрика": "Всього операцій", "A": f"{metrics_a['total']:,.0f}", "B": f"{metrics_b['total']:,.0f}", "Δ": f"{metrics_b['total'] - metrics_a['total']:+,.0f}", "Δ %": _fmt_delta_pct(metrics_a["total"], metrics_b["total"])},
                 {"Метрика": "Середнє за день", "A": f"{metrics_a['avg']:.1f}", "B": f"{metrics_b['avg']:.1f}", "Δ": f"{metrics_b['avg'] - metrics_a['avg']:+.1f}", "Δ %": _fmt_delta_pct(metrics_a["avg"], metrics_b["avg"])},
                 {"Метрика": "Пік за день", "A": f"{metrics_a['peak']:,.0f}", "B": f"{metrics_b['peak']:,.0f}", "Δ": f"{metrics_b['peak'] - metrics_a['peak']:+,.0f}", "Δ %": _fmt_delta_pct(metrics_a["peak"], metrics_b["peak"])},
-                {"Метрика": "Коефіцієнт погоджень, %", "A": f"{metrics_a['rate']:.1f}%" if metrics_a["rate"] is not None else "— (немає повних місяців)", "B": f"{metrics_b['rate']:.1f}%" if metrics_b["rate"] is not None else "— (немає повних місяців)", "Δ": (f"{metrics_b['rate'] - metrics_a['rate']:+.1f} п.п." if metrics_a["rate"] is not None and metrics_b["rate"] is not None else "—"), "Δ %": "—"},
+                {"Метрика": "Коефіцієнт погоджень, %", "A": f"{metrics_a['rate']:.1f}%" if metrics_a["rate"] is not None else "—", "B": f"{metrics_b['rate']:.1f}%" if metrics_b["rate"] is not None else "—", "Δ": (f"{metrics_b['rate'] - metrics_a['rate']:+.1f} п.п." if metrics_a["rate"] is not None and metrics_b["rate"] is not None else "—"), "Δ %": "—"},
             ]
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
