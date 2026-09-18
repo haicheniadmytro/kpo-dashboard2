@@ -280,6 +280,7 @@ def load_data():
     warnings = []
     unknown_ops = {}          # назва -> список місяців, де зустрілась
     sheet_month_totals = {}   # month_key -> (true, false) з рядка «Тотал»
+    debug_info = []           # діагностика: що саме код визначив як «Тотал» для кожного блоку
 
     for sheet_name in SHEETS:
         try:
@@ -382,6 +383,14 @@ def load_data():
                 t_true, _ = as_number(total_row[sum_cols[0]] if sum_cols[0] < len(total_row) else "")
                 t_false, _ = as_number(total_row[sum_cols[1]] if sum_cols[1] < len(total_row) else "")
                 sheet_month_totals[month_key] = (t_true, t_false)
+
+            debug_info.append({
+                "аркуш": sheet_name,
+                "місяць": month_label,
+                "рядок «Тотал» (Excel)": total_row_idx + 1,
+                "колонка назви": label_col,
+                "вміст рядка (перші 6 комірок)": " | ".join(str(x) for x in total_row[:6]),
+            })
 
             # --- Рядки операцій під «Тоталом» ---
             rows_read = 0
@@ -492,7 +501,7 @@ def load_data():
                 f"потрапляють у діапазон блоку."
             )
 
-    return df, warnings
+    return df, warnings, debug_info
 
 # ============================================================
 # 8. Допоміжні функції
@@ -732,7 +741,7 @@ st.title("📊 Dashboard погоджень КПО")
 st.caption("Дані завантажуються напряму з Google Таблиці. Кеш оновлюється кожні 5 хвилин. Час — за Києвом.")
 
 try:
-    df, load_warnings = load_data()
+    df, load_warnings, load_debug_info = load_data()
 except Exception as exc:
     st.error("Не вдалося завантажити Google Таблицю.")
     st.code(str(exc))
@@ -742,6 +751,17 @@ except Exception as exc:
         "3) чи правильно додані secrets у Streamlit."
     )
     st.stop()
+
+with st.expander("🔧 Діагностика розпізнавання таблиці (для перевірки, що деплой оновився)", expanded=False):
+    st.caption(
+        "Якщо тут видно рядок з написом «Тотал» і одразу після нього суми (наприклад "
+        "1049 | 115 | 69 | 3 | 107 | 6) — розпізнавання працює правильно. "
+        "Якщо замість цього видно TRUE/FALSE або порожні значення — деплой ще не оновився."
+    )
+    if load_debug_info:
+        st.dataframe(pd.DataFrame(load_debug_info), use_container_width=True, hide_index=True)
+    else:
+        st.info("Немає даних діагностики.")
 
 if load_warnings:
     with st.expander(f"⚠️ Попередження при завантаженні даних ({len(load_warnings)})", expanded=False):
@@ -1879,4 +1899,4 @@ with tab5:
             fig_cmp.update_layout(height=380, margin=dict(l=10, r=10, t=40, b=10))
             st.plotly_chart(fig_cmp, use_container_width=True)
 
-st.caption("Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці • Час: Europe/Kyiv.")
+st.caption("Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці • Час: Europe/Kyiv. • build: total-row-fix-2026-09-18-v2")
