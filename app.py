@@ -220,6 +220,13 @@ def _detect_day_columns(values, start, end, month):
             best = (r, sorted(found))
     return best if best else (None, [])
 
+def _looks_like_operation_label(label):
+    """
+    Справжня назва операції містить хоча б одну літеру (укр. чи лат.).
+    Рядок із самих цифр — це майже напевно чужа таблиця, а не операція.
+    """
+    return bool(re.search(r"[A-Za-zА-Яа-яІіЇїЄєҐґ]", label))
+
 def _build_day_spans(day_cols):
     """
     Перетворює [(col, day)] у [(day, col, span)], де span — скільки колонок
@@ -272,24 +279,76 @@ def load_data():
 
         sheet_year = 2000 + int(sheet_name)
 
+        # --- Крок 1: зібрати всіх кандидатів на блок місяця ---
+        # На аркуші може бути кілька місць з написом «Вересень 26» (наприклад,
+        # повна деталізована таблиця і окрема компактна зведена таблиця).
+        # Обробляти всі підряд не можна — це подвоює дані. Тому спершу
+        # оцінюємо кожного кандидата і беремо лише найповніший на місяць.
+        candidates_by_month = {}
         for header_row, month, year, block_end in _find_month_blocks(values, sheet_year):
             month_key = f"{year}-{month:02d}"
-            month_label = f"{month:02d}.{year}"
-            where = f"аркуш «{sheet_name}», {month_label}"
 
             total_row_idx, label_col = _find_total_row(values, header_row, block_end)
             if total_row_idx is None:
-                warnings.append(f"⚠️ {where}: не знайдено рядок «Тотал» — блок пропущено.")
                 continue
 
             day_header_row, day_cols = _detect_day_columns(values, header_row, block_end, month)
             if not day_cols:
-                warnings.append(
-                    f"⚠️ {where}: не знайдено заголовків днів (очікується формат «01.{month:02d}») "
-                    f"— блок пропущено."
-                )
                 continue
 
+            # Скільки рядків нижче «Тотал» справді схожі на операції,
+            # і скільки з них збігаються з відомим списком OPERATIONS.
+            valid_rows = 0
+            matched_known = 0
+            for r in range(total_row_idx + 1, block_end):
+                row = values[r]
+                label = normalize_operation(row[label_col] if label_col < len(row) else "")
+                if not label:
+                    break
+                if label.lower() == "тотал":
+                    continue
+                if parse_month_header(label, sheet_year):
+                    break
+                if not _looks_like_operation_label(label):
+                    break
+                valid_rows += 1
+                if ALIASES.get(label, label) in OPERATIONS:
+                    matched_known += 1
+
+            score = (matched_known, len(day_cols), valid_rows)
+            candidates_by_month.setdefault(month_key, []).append(
+                (score, header_row, month, year, block_end, total_row_idx, label_col)
+            )
+
+        # --- Крок 2: для кожного місяця залишити лише найповніший блок ---
+        chosen_blocks = []
+        for month_key, candidates in candidates_by_month.items():
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            best = candidates[0]
+            if best[0][2] == 0:
+                # жодного валідного рядка операції не знайдено в жодного кандидата
+                month_label = f"{best[2]:02d}.{best[3]}"
+                warnings.append(
+                    f"⚠️ Аркуш «{sheet_name}», {month_label}: під рядком «Тотал» "
+                    f"не знайдено жодної операції — блок пропущено."
+                )
+                continue
+            if len(candidates) > 1:
+                month_label = f"{best[2]:02d}.{best[3]}"
+                warnings.append(
+                    f"ℹ️ Аркуш «{sheet_name}», {month_label}: на аркуші знайдено "
+                    f"{len(candidates)} блоки з написом цього місяця — використано "
+                    f"найповніший (найбільше днів і відомих операцій), інші пропущено."
+                )
+            chosen_blocks.append(best[1:])  # (header_row, month, year, block_end, total_row_idx, label_col)
+
+        # --- Крок 3: читання обраних блоків ---
+        for header_row, month, year, block_end, total_row_idx, label_col in chosen_blocks:
+            month_key = f"{year}-{month:02d}"
+            month_label = f"{month:02d}.{year}"
+            where = f"аркуш «{sheet_name}», {month_label}"
+
+            day_header_row, day_cols = _detect_day_columns(values, header_row, block_end, month)
             day_spans = _build_day_spans(day_cols)
             first_day_col = day_spans[0][1]
 
@@ -323,6 +382,12 @@ def load_data():
                     continue                    # службовий рядок
                 if parse_month_header(label, sheet_year):
                     break                        # почався наступний місяць
+                if not _looks_like_operation_label(label):
+                    warnings.append(
+                        f"⚠️ {where}: рядок «{label}» не схожий на назву операції "
+                        f"(немає літер) — читання блоку зупинено на цьому рядку."
+                    )
+                    break
 
                 operation = ALIASES.get(label, label)
                 if operation not in OPERATIONS:
