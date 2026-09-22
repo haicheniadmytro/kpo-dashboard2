@@ -1026,7 +1026,7 @@ comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 # ============================================================
 # 13. Функція custom_metric та CSS
 # ============================================================
-def custom_metric(label, value, help_text=None, color=None):
+def custom_metric(label, value, help_text=None, color=None, compact=False):
     safe_label = html.escape(str(label))
     safe_value = html.escape(str(value))
     help_icon = ""
@@ -1034,8 +1034,9 @@ def custom_metric(label, value, help_text=None, color=None):
         safe_help = html.escape(str(help_text))
         help_icon = f'<span class="help-icon" title="{safe_help}">?</span>'
     value_style = f' style="color:{html.escape(color)};"' if color else ""
+    extra_class = " metric-compact" if compact else ""
     return f"""
-    <div class="metric-container">
+    <div class="metric-container{extra_class}">
         <div class="metric-label">{safe_label} {help_icon}</div>
         <div class="metric-value"{value_style}>{safe_value}</div>
     </div>
@@ -1087,6 +1088,16 @@ st.markdown(f"""
         transition: border-left-color 0.15s ease;
     }}
     .metric-container:hover {{ border-left-color: {KPO_AMBER}; }}
+    .metric-container.metric-compact {{
+        padding: 0.58rem 0.8rem;
+        margin-bottom: 0.4rem;
+    }}
+    .metric-container.metric-compact .metric-label {{
+        font-size: 0.63rem !important;
+    }}
+    .metric-container.metric-compact .metric-value {{
+        font-size: 1.3rem !important;
+    }}
     .metric-label {{
         font-size: 0.7rem !important;
         font-weight: 500;
@@ -1163,20 +1174,20 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "📈 Динаміка"
 with tab1:
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     with col1:
-        st.markdown(custom_metric("Всього", f"{total_value:,.0f}", "Загальна кількість операцій за вибраний період (включно з календарними днями без внесених даних)"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Всього", f"{total_value:,.0f}", "Загальна кількість операцій за вибраний період (включно з календарними днями без внесених даних)", compact=True), unsafe_allow_html=True)
     with col2:
-        st.markdown(custom_metric("Середнє за день", f"{daily_avg:.0f}", "Сумарна кількість поділена на кількість днів, за які реально внесені дані (порожні клітинки не враховуються як нулі)"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Середнє за день", f"{daily_avg:.0f}", "Сумарна кількість поділена на кількість днів, за які реально внесені дані (порожні клітинки не враховуються як нулі)", compact=True), unsafe_allow_html=True)
     with col3:
         avg_weekday_str = f"{daily_avg_weekday:.0f}" if daily_avg_weekday is not None and not pd.isna(daily_avg_weekday) else "—"
-        st.markdown(custom_metric("Середнє за будні", avg_weekday_str, "Середня кількість операцій у будні (лише дні з внесеними даними)"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Середнє за будні", avg_weekday_str, "Середня кількість операцій у будні (лише дні з внесеними даними)", compact=True), unsafe_allow_html=True)
     with col4:
         avg_weekend_str = f"{daily_avg_weekend:.0f}" if daily_avg_weekend is not None and not pd.isna(daily_avg_weekend) else "—"
-        st.markdown(custom_metric("Середнє за вихідні", avg_weekend_str, "Середня кількість операцій у вихідні (лише дні з внесеними даними)"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Середнє за вихідні", avg_weekend_str, "Середня кількість операцій у вихідні (лише дні з внесеними даними)", compact=True), unsafe_allow_html=True)
     with col5:
         peak_display = f"{peak:,.0f}" if peak > 0 else "—"
         if peak_date is not None:
             peak_display += f" ({peak_date.strftime('%d.%m')})"
-        st.markdown(custom_metric("Пік за день", peak_display, "Найбільша кількість операцій за один день (лише дні з внесеними даними). У дужках – дата піку."), unsafe_allow_html=True)
+        st.markdown(custom_metric("Пік за день", peak_display, "Найбільша кількість операцій за один день (лише дні з внесеними даними). У дужках – дата піку.", compact=True), unsafe_allow_html=True)
     with col6:
         st.markdown(custom_metric(
             "Коефіцієнт погоджень",
@@ -1184,13 +1195,14 @@ with tab1:
             f"Частка TRUE (погоджено) від TRUE+FALSE за вибраний період і вибрані операції. "
             f"🟢 ≥{APPROVAL_GOOD_THRESHOLD}% 🟡 {APPROVAL_WARN_THRESHOLD}-{APPROVAL_GOOD_THRESHOLD}% 🔴 <{APPROVAL_WARN_THRESHOLD}%",
             color=approval_rate_color(approval_rate_val if approval_rate_available else None),
+            compact=True,
         ), unsafe_allow_html=True)
 
     col7, col8, col9, col10, col11 = st.columns(5)
     with col7:
-        st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×", "У скільки разів пік перевищує середнє"), unsafe_allow_html=True)
+        st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×", "У скільки разів пік перевищує середнє", compact=True), unsafe_allow_html=True)
     with col8:
-        st.markdown(custom_metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—", "Коефіцієнт варіації (лише дні з внесеними даними). 🟢 <15% 🟡 15-30% 🔴 >30%", color=cv_color(cv if cv > 0 else None)), unsafe_allow_html=True)
+        st.markdown(custom_metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—", "Коефіцієнт варіації (лише дні з внесеними даними). 🟢 <15% 🟡 15-30% 🔴 >30%", color=cv_color(cv if cv > 0 else None), compact=True), unsafe_allow_html=True)
     with col9:
         if busiest_weekday:
             day_ua = WEEKDAY_UA.get(busiest_weekday, busiest_weekday)
@@ -1199,7 +1211,7 @@ with tab1:
         else:
             val = "—"
             help_txt = None
-        st.markdown(custom_metric("Найактивніший день", val, help_txt), unsafe_allow_html=True)
+        st.markdown(custom_metric("Найактивніший день", val, help_txt, compact=True), unsafe_allow_html=True)
     with col10:
         if busiest_op:
             display_name = busiest_op if len(busiest_op) <= 12 else busiest_op[:10] + "…"
@@ -1208,7 +1220,7 @@ with tab1:
         else:
             val = "—"
             help_txt = None
-        st.markdown(custom_metric("Найактивніша операція", val, help_txt), unsafe_allow_html=True)
+        st.markdown(custom_metric("Найактивніша операція", val, help_txt, compact=True), unsafe_allow_html=True)
     with col11:
         if period_mode == "За місяцями" and len(selected_months) == 1 and operation_mode == "Тотал":
             st.markdown("**Порівняння**")
@@ -1219,7 +1231,7 @@ with tab1:
             else:
                 st.markdown("<p class='comparison-text'>—</p>", unsafe_allow_html=True)
         else:
-            st.markdown(custom_metric("Порівняння", "—", "Доступно лише для одного місяця в режимі 'За місяцями' + 'Тотал'"), unsafe_allow_html=True)
+            st.markdown(custom_metric("Порівняння", "—", "Доступно лише для одного місяця в режимі 'За місяцями' + 'Тотал'", compact=True), unsafe_allow_html=True)
 
     st.divider()
     st.subheader("💡 Інсайти")
@@ -1447,10 +1459,11 @@ with tab3:
         )
 
         if total_rate is not None:
+            total_rate_color = approval_rate_color(total_rate) or KPO_RED
             fig_approval.add_hline(
                 y=total_rate,
                 line_dash="dash",
-                line_color=KPO_RED,
+                line_color=total_rate_color,
                 line_width=4,
                 annotation_text=f"Тотал: {total_rate:.1f}%",
                 annotation_position="top right",
@@ -1460,7 +1473,7 @@ with tab3:
                 go.Scatter(
                     x=[None], y=[None],
                     mode='lines',
-                    line=dict(color=KPO_RED, width=4, dash='dash'),
+                    line=dict(color=total_rate_color, width=4, dash='dash'),
                     name=f"Тотал: {total_rate:.1f}%",
                     showlegend=True
                 )
@@ -1518,7 +1531,11 @@ with tab3:
             font_size = 12 if len(heat_rate_pivot.index) <= 12 else (10 if len(heat_rate_pivot.index) <= 24 else 8)
             fig_approval_heat.update_traces(textfont=dict(size=font_size))
             st.plotly_chart(fig_approval_heat, use_container_width=True)
-            st.caption("🔴 <70% 🟡 70-85% 🟢 >85% — кольорова шкала неперервна.")
+            st.caption(
+                f"🔴 <{APPROVAL_WARN_THRESHOLD}% "
+                f"🟡 {APPROVAL_WARN_THRESHOLD}-{APPROVAL_GOOD_THRESHOLD}% "
+                f"🟢 >{APPROVAL_GOOD_THRESHOLD}% — кольорова шкала неперервна."
+            )
         else:
             st.info("Немає даних для теплової карти за вибраний період.")
     else:
