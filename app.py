@@ -64,13 +64,6 @@ pio.templates.default = "kpo_dark"
 # ============================================================
 SPREADSHEET_ID = "1STX1vgDAk3zVDshXdZmTgJJSvQNCN4WmmftOskwymYI"
 
-# ============================================================
-# 4. Автоматичне визначення років
-# ============================================================
-START_YEAR = 2024
-CURRENT_YEAR = datetime.now().year
-SHEETS = [str(year)[-2:] for year in range(START_YEAR, CURRENT_YEAR + 1)]
-
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 MONTHS = {
@@ -84,11 +77,6 @@ OPERATIONS = [
     "Переоформлення", "Закриття контракта", "Со-доступ", "Зміна дати активації",
     "Loyalty",
 ]
-
-def normalize_operation(value):
-    if not isinstance(value, str):
-        return ""
-    return " ".join(value.strip().split())
 
 ALIASES = {
     "Зміна дати активації": "Зміна дати активації",
@@ -209,7 +197,7 @@ def _find_total_row(values, start, end):
             return r, 0
     for r in range(start, end):
         row = values[r]
-        for c in range(1, min(len(row), 6)):
+        for c in range(1, len(row)):
             if normalize_operation(row[c]).lower() == "тотал":
                 return r, c
     return None, None
@@ -260,6 +248,29 @@ def _build_day_spans(day_cols):
         spans.append((day, col, max(1, min(span, 2))))
     return spans
 
+def _discover_year_sheets(spreadsheet):
+    """
+    Замість того, щоб вгадувати назви аркушів за діапазоном років
+    (наприклад «від 2024 до поточного»), бере фактичний список аркушів
+    з таблиці і залишає лише ті, чия назва — двоцифровий рік («24», «25», «26»).
+    Нові роки підхоплюються самі, старі не губляться, а якщо назва аркуша
+    не відповідає формату — про це можна дізнатись явно, а не мовчки.
+
+    Повертає самі об'єкти Worksheet (а не лише назви), щоб виклик не робив
+    повторний запит до API на кожен аркуш — spreadsheet.worksheets() вже
+    один раз забрав усі метадані.
+    """
+    all_worksheets = spreadsheet.worksheets()
+    year_ws = {}
+    for ws in all_worksheets:
+        title = ws.title.strip()
+        if re.fullmatch(r"\d{2}", title):
+            year_ws[title] = ws
+    ordered_titles = sorted(year_ws.keys(), key=int)
+    ordered_worksheets = [year_ws[t] for t in ordered_titles]
+    all_titles = [ws.title for ws in all_worksheets]
+    return ordered_titles, ordered_worksheets, all_titles
+
 # ============================================================
 # 7. Робота з Google Sheets
 # ============================================================
@@ -282,12 +293,24 @@ def load_data():
     sheet_month_totals = {}   # month_key -> (true, false) з рядка «Тотал»
     debug_info = []           # діагностика: що саме код визначив як «Тотал» для кожного блоку
 
-    for sheet_name in SHEETS:
+    sheet_names, worksheets, all_titles = _discover_year_sheets(spreadsheet)
+    if not sheet_names:
+        raise ValueError(
+            f"Не знайдено жодного аркуша з назвою-роком (напр. «26»). "
+            f"Наявні аркуші: {', '.join(all_titles)}."
+        )
+    other_titles = [t for t in all_titles if t.strip() not in sheet_names]
+    if other_titles:
+        warnings.append(
+            f"ℹ️ Аркуші без формату «рік» (пропущено): {', '.join(other_titles)}."
+        )
+
+    for sheet_name, worksheet in zip(sheet_names, worksheets):
         try:
-            worksheet = spreadsheet.worksheet(sheet_name)
-        except Exception:
+            values = worksheet.get_all_values()
+        except Exception as exc:
+            warnings.append(f"⚠️ Не вдалося прочитати аркуш «{sheet_name}»: {exc}")
             continue
-        values = worksheet.get_all_values()
         if not values:
             continue
 
@@ -331,7 +354,7 @@ def load_data():
 
             score = (matched_known, len(day_cols), valid_rows)
             candidates_by_month.setdefault(month_key, []).append(
-                (score, header_row, month, year, block_end, total_row_idx, label_col)
+                (score, header_row, month, year, block_end, total_row_idx, label_col, day_cols)
             )
 
         # --- Крок 2: для кожного місяця залишити лише найповніший блок ---
@@ -354,15 +377,14 @@ def load_data():
                     f"{len(candidates)} блоки з написом цього місяця — використано "
                     f"найповніший (найбільше днів і відомих операцій), інші пропущено."
                 )
-            chosen_blocks.append(best[1:])  # (header_row, month, year, block_end, total_row_idx, label_col)
+            chosen_blocks.append(best[1:])  # (header_row, month, year, block_end, total_row_idx, label_col, day_cols)
 
         # --- Крок 3: читання обраних блоків ---
-        for header_row, month, year, block_end, total_row_idx, label_col in chosen_blocks:
+        for header_row, month, year, block_end, total_row_idx, label_col, day_cols in chosen_blocks:
             month_key = f"{year}-{month:02d}"
             month_label = f"{month:02d}.{year}"
             where = f"аркуш «{sheet_name}», {month_label}"
 
-            day_header_row, day_cols = _detect_day_columns(values, header_row, block_end, month)
             day_spans = _build_day_spans(day_cols)
             first_day_col = day_spans[0][1]
 
