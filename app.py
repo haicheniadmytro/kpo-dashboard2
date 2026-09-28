@@ -317,10 +317,6 @@ def load_data():
         sheet_year = 2000 + int(sheet_name)
 
         # --- Крок 1: зібрати всіх кандидатів на блок місяця ---
-        # На аркуші може бути кілька місць з написом «Вересень 26» (наприклад,
-        # повна деталізована таблиця і окрема компактна зведена таблиця).
-        # Обробляти всі підряд не можна — це подвоює дані. Тому спершу
-        # оцінюємо кожного кандидата і беремо лише найповніший на місяць.
         candidates_by_month = {}
         for header_row, month, year, block_end in _find_month_blocks(values, sheet_year):
             month_key = f"{year}-{month:02d}"
@@ -333,8 +329,6 @@ def load_data():
             if not day_cols:
                 continue
 
-            # Скільки рядків нижче «Тотал» справді схожі на операції,
-            # і скільки з них збігаються з відомим списком OPERATIONS.
             valid_rows = 0
             matched_known = 0
             for r in range(total_row_idx + 1, block_end):
@@ -363,7 +357,6 @@ def load_data():
             candidates.sort(key=lambda c: c[0], reverse=True)
             best = candidates[0]
             if best[0][2] == 0:
-                # жодного валідного рядка операції не знайдено в жодного кандидата
                 month_label = f"{best[2]:02d}.{best[3]}"
                 warnings.append(
                     f"⚠️ Аркуш «{sheet_name}», {month_label}: під рядком «Тотал» "
@@ -377,7 +370,7 @@ def load_data():
                     f"{len(candidates)} блоки з написом цього місяця — використано "
                     f"найповніший (найбільше днів і відомих операцій), інші пропущено."
                 )
-            chosen_blocks.append(best[1:])  # (header_row, month, year, block_end, total_row_idx, label_col, day_cols)
+            chosen_blocks.append(best[1:])
 
         # --- Крок 3: читання обраних блоків ---
         for header_row, month, year, block_end, total_row_idx, label_col, day_cols in chosen_blocks:
@@ -388,8 +381,6 @@ def load_data():
             day_spans = _build_day_spans(day_cols)
             first_day_col = day_spans[0][1]
 
-            # Колонки місячного підсумку: між назвою операції та першим днем.
-            # Порядок позиційний: перша = погоджено (TRUE), друга = відмова (FALSE).
             sum_cols = [c for c in range(label_col + 1, first_day_col)][:2]
 
             expected_days = pd.Period(month_key).days_in_month
@@ -399,7 +390,6 @@ def load_data():
                     f"Дані читаються лише за знайдені дні."
                 )
 
-            # --- Місячний «Тотал» із таблиці (для звірки) ---
             total_row = values[total_row_idx]
             if len(sum_cols) == 2:
                 t_true, _ = as_number(total_row[sum_cols[0]] if sum_cols[0] < len(total_row) else "")
@@ -414,18 +404,17 @@ def load_data():
                 "вміст рядка (перші 6 комірок)": " | ".join(str(x) for x in total_row[:6]),
             })
 
-            # --- Рядки операцій під «Тоталом» ---
             rows_read = 0
             for r in range(total_row_idx + 1, block_end):
                 row = values[r]
                 label = normalize_operation(row[label_col] if label_col < len(row) else "")
 
                 if not label:
-                    break                       # порожня назва = кінець таблиці
+                    break
                 if label.lower() == "тотал":
-                    continue                    # службовий рядок
+                    continue
                 if parse_month_header(label, sheet_year):
-                    break                        # почався наступний місяць
+                    break
                 if not _looks_like_operation_label(label):
                     warnings.append(
                         f"⚠️ {where}: рядок «{label}» не схожий на назву операції "
@@ -471,7 +460,6 @@ def load_data():
     df_raw = pd.DataFrame(records)
     df_raw["date"] = pd.to_datetime(df_raw["date"])
 
-    # --- Агрегація по (дата, операція) ---
     df = (
         df_raw.groupby(["date", "operation"], as_index=False)
         .agg(
@@ -482,7 +470,6 @@ def load_data():
         )
     )
 
-    # --- Рядок «Тотал» = сума операцій за день ---
     total = (
         df.groupby("date", as_index=False)
         .agg(
@@ -495,7 +482,6 @@ def load_data():
     )
     df = pd.concat([df, total], ignore_index=True)
 
-    # --- Метадані дат ---
     df["year"] = df["date"].dt.year
     df["month"] = df["date"].dt.strftime("%Y-%m")
     df["month_name"] = df["date"].dt.strftime("%b %Y")
@@ -503,7 +489,6 @@ def load_data():
     df["is_weekend"] = df["date"].dt.weekday >= 5
     df = df.sort_values(["date", "operation"]).reset_index(drop=True)
 
-    # --- Попередження про невідомі операції (не з хардкоду OPERATIONS) ---
     for op, months in unknown_ops.items():
         warnings.append(
             f"🆕 Операція «{op}» відсутня у списку OPERATIONS "
@@ -511,7 +496,6 @@ def load_data():
             f"додай назву в OPERATIONS, щоб вона з'явилась у фільтрах у правильному порядку."
         )
 
-    # --- Звірка з рядком «Тотал» таблиці ---
     computed = df[df["operation"] == "Тотал"].groupby("month")["value"].sum()
     for month_key, (t_true, t_false) in sheet_month_totals.items():
         sheet_sum = t_true + t_false
@@ -625,10 +609,6 @@ def gaussian_kde_np(data, x_grid, bandwidth=None):
     return density
 
 def analyze_density(group_names, dev_data):
-    """
-    Обчислює статистичні характеристики кожної кривої щільності
-    на основі реальних даних поточного періоду.
-    """
     stats = {}
     for name, data in zip(group_names, dev_data):
         if data is None or len(data) < 2:
@@ -931,11 +911,6 @@ busiest_weekday, busiest_weekday_val = calc_busiest_weekday(filtered)
 busiest_op, busiest_op_val = calc_busiest_operation(filtered)
 std, cv, cv_interp = calc_stability(filtered, daily_avg)
 
-# --- Коефіцієнт погоджень ---
-# TRUE/FALSE тепер зберігаються в кожному рядку (дата, операція), а не одним
-# значенням на місяць, тому рахуємо напряму з filtered_stats: працює для
-# будь-якого діапазону дат і будь-якого набору вибраних операцій, без
-# обмеження "лише повні місяці".
 if not filtered_stats.empty:
     sum_true_total = float(filtered_stats["sum_true"].sum())
     sum_false_total = float(filtered_stats["sum_false"].sum())
@@ -949,7 +924,6 @@ else:
     approval_rate_str = "—"
     approval_rate_available = False
 
-# --- Коефіцієнт погоджень по операціях (той самий період, всі операції) ---
 if period_mode == "За місяцями":
     period_mask = df["year"].isin(selected_years) & df["month"].isin(selected_months)
 else:
@@ -966,7 +940,6 @@ if not period_ops.empty:
     approval_by_op["approval_rate"] = (approval_by_op["sum_true"] / approval_by_op["total"] * 100).round(1)
     approval_by_op = approval_by_op.sort_values("approval_rate", ascending=False)
 
-# --- Порівняння ---
 comparison_parts = []
 if period_mode == "За місяцями" and len(selected_months) == 1 and operation_mode == "Тотал":
     current_period = pd.Period(selected_months[0])
@@ -1022,6 +995,40 @@ if period_mode == "За місяцями" and len(selected_months) == 1 and oper
         if delta_year is not None:
             comparison_parts.append(f"Мин. рік: {delta_year:+.1f}%")
 comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
+
+# ============================================================
+# 12b. Частка дня у календарному місяці (для підписів на графіках)
+# ============================================================
+def _add_pct_of_month(frame, monthly_lookup, value_col="value"):
+    """
+    Додає до frame колонки pct_of_month та label.
+    Знаменник — сума value за той самий календарний місяць, що й дата точки,
+    окремо для кожної операції (щоб працювало і в режимі «Вибрані операції»).
+    Працює і для одного місяця, і для діапазону через кілька місяців.
+    """
+    frame = frame.copy()
+    frame["month_key"] = frame["date"].dt.strftime("%Y-%m")
+    frame["month_total"] = [
+        monthly_lookup.get((m, o), np.nan)
+        for m, o in zip(frame["month_key"], frame["operation"])
+    ]
+    frame["pct_of_month"] = np.where(
+        frame["month_total"] > 0,
+        frame[value_col] / frame["month_total"] * 100,
+        np.nan,
+    )
+    frame["label"] = frame["pct_of_month"].apply(
+        lambda x: f"{x:.1f}%" if pd.notna(x) else ""
+    )
+    return frame
+
+# Lookup: (month_key, operation) -> сума value за цей місяць по цій операції.
+# Беремо з ПОВНОГО df (не з filtered), щоб знаменник був повним місячним тоталом.
+_monthly_lookup_full = (
+    df.assign(month_key=lambda d: d["date"].dt.strftime("%Y-%m"))
+    .groupby(["month_key", "operation"])["value"].sum()
+    .to_dict()
+)
 
 # ============================================================
 # 13. Функція custom_metric та CSS
@@ -1267,7 +1274,6 @@ with tab1:
 
     st.divider()
 
-    # --- Прогнози ---
     if period_mode != "За місяцями":
         st.info("📊 Прогнози доступні лише в режимі 'За місяцями' з одним обраним місяцем.")
     elif len(selected_months) != 1:
@@ -1321,19 +1327,47 @@ with tab1:
     st.subheader("📈 Динаміка за період")
     if operation_mode == "Тотал":
         daily = filtered.groupby("date")["value"].sum().reset_index()
-        fig_overview = px.line(daily, x="date", y="value", markers=True, labels={"date": "Дата", "value": "Кількість"}, color_discrete_sequence=[KPO_CYAN])
+        daily["operation"] = "Тотал"
+        daily = _add_pct_of_month(daily, _monthly_lookup_full)
+
+        fig_overview = px.line(
+            daily, x="date", y="value", markers=True,
+            text="label",
+            labels={"date": "Дата", "value": "Кількість"},
+            color_discrete_sequence=[KPO_CYAN],
+        )
+        fig_overview.update_traces(
+            textposition="top center",
+            textfont=dict(size=10, color=KPO_TEXT),
+            cliponaxis=False,
+        )
         fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
+
         if smooth_enabled:
             daily["value_smooth"] = daily["value"].rolling(window=smooth_window, min_periods=1, center=True).mean()
             fig_overview.add_scatter(x=daily["date"], y=daily["value_smooth"], mode="lines", name=f"Ковзне середнє ({smooth_window} дн.)", line=dict(color=KPO_AMBER, width=3))
+
         anomalies = detect_anomalies(filtered, window=14, threshold=3.0)
         if not anomalies.empty:
             anomaly_points = anomalies[anomalies["is_anomaly"]]
             if not anomaly_points.empty:
                 fig_overview.add_scatter(x=anomaly_points["date"], y=anomaly_points["value"], mode="markers", marker=dict(color=KPO_RED, size=10, symbol="x"), name="Аномалія")
     else:
-        fig_overview = px.line(filtered, x="date", y="value", color="operation", markers=True, labels={"date": "Дата", "value": "Кількість", "operation": "Операція"})
+        plot_df = _add_pct_of_month(filtered, _monthly_lookup_full)
+
+        fig_overview = px.line(
+            plot_df, x="date", y="value",
+            color="operation", markers=True,
+            text="label",
+            labels={"date": "Дата", "value": "Кількість", "operation": "Операція"},
+        )
+        fig_overview.update_traces(
+            textposition="top center",
+            textfont=dict(size=9),
+            cliponaxis=False,
+        )
         fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
+
     fig_overview.update_layout(height=420, hovermode="x unified", margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_overview, use_container_width=True)
 
@@ -1344,19 +1378,46 @@ with tab2:
     st.subheader("📈 Детальна динаміка")
     if operation_mode == "Тотал":
         daily = filtered.groupby("date")["value"].sum().reset_index()
-        fig_daily_detailed = px.line(daily, x="date", y="value", markers=True, labels={"date": "Дата", "value": "Кількість"}, title="Щоденна динаміка")
+        daily["operation"] = "Тотал"
+        daily = _add_pct_of_month(daily, _monthly_lookup_full)
+
+        fig_daily_detailed = px.line(
+            daily, x="date", y="value", markers=True,
+            text="label",
+            labels={"date": "Дата", "value": "Кількість"},
+            title="Щоденна динаміка",
+        )
+        fig_daily_detailed.update_traces(
+            textposition="top center", textfont=dict(size=10, color=KPO_TEXT),
+            cliponaxis=False,
+        )
         fig_daily_detailed.update_xaxes(tickformat="%d.%m", title_text="Дата")
+
         if smooth_enabled:
             daily["value_smooth"] = daily["value"].rolling(window=smooth_window, min_periods=1, center=True).mean()
             fig_daily_detailed.add_scatter(x=daily["date"], y=daily["value_smooth"], mode="lines", name=f"Ковзне середнє ({smooth_window} дн.)", line=dict(color=KPO_AMBER, width=3))
+
         anomalies = detect_anomalies(filtered, window=14, threshold=3.0)
         if not anomalies.empty:
             anomaly_points = anomalies[anomalies["is_anomaly"]]
             if not anomaly_points.empty:
                 fig_daily_detailed.add_scatter(x=anomaly_points["date"], y=anomaly_points["value"], mode="markers", marker=dict(color=KPO_RED, size=10, symbol="x"), name="Аномалія")
     else:
-        fig_daily_detailed = px.line(filtered, x="date", y="value", color="operation", markers=True, labels={"date": "Дата", "value": "Кількість", "operation": "Операція"}, title="Динаміка вибраних операцій")
+        plot_df = _add_pct_of_month(filtered, _monthly_lookup_full)
+
+        fig_daily_detailed = px.line(
+            plot_df, x="date", y="value",
+            color="operation", markers=True,
+            text="label",
+            labels={"date": "Дата", "value": "Кількість", "operation": "Операція"},
+            title="Динаміка вибраних операцій",
+        )
+        fig_daily_detailed.update_traces(
+            textposition="top center", textfont=dict(size=9),
+            cliponaxis=False,
+        )
         fig_daily_detailed.update_xaxes(tickformat="%d.%m", title_text="Дата")
+
     fig_daily_detailed.update_layout(height=400, hovermode="x unified", margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_daily_detailed, use_container_width=True)
 
@@ -1683,17 +1744,14 @@ with tab4:
             fig_density.update_layout(title="Криві щільності відхилень від середнього", xaxis_title="Відхилення, %", yaxis_title="Щільність", height=400, margin=dict(l=10, r=10, t=40, b=10), legend=dict(title="Група / лінії", x=0.98, y=0.98, xanchor='right', yanchor='top', bgcolor='rgba(0,0,0,0)'), hovermode="x unified")
             st.plotly_chart(fig_density, use_container_width=True)
 
-            # ---- ДИНАМІЧНИЙ АНАЛІЗ КРИВИХ (на основі реальних даних) ----
             density_stats = analyze_density(group_names, dev_data)
 
-            # Аномалії для згадки у бізнес-частині
             density_anomalies = detect_anomalies(filtered, window=14, threshold=3.0)
             if not density_anomalies.empty:
                 density_anomaly_points = density_anomalies[density_anomalies["is_anomaly"]].copy()
             else:
                 density_anomaly_points = pd.DataFrame()
 
-            # ============ Expander 1: Що означає форма кривих? ============
             with st.expander("❓ Що означає форма кривих? (автоматичний опис ваших даних)"):
                 if not density_stats:
                     st.info("Недостатньо даних для опису.")
@@ -1727,14 +1785,12 @@ with tab4:
                             f"Різниця у стабільності ≈ **{widest[1]['std'] - narrowest[1]['std']:.1f} п.п.**"
                         )
 
-            # ============ Expander 2: Як це інтерпретувати для бізнесу? ============
             with st.expander("❓ Як це інтерпретувати для бізнесу? (висновки за вашими даними)"):
                 if not density_stats:
                     st.info("Недостатньо даних для інтерпретації.")
                 else:
                     business_lines = []
 
-                    # 1. Порівняння будні ↔ вихідні
                     if "Будні" in density_stats and "Вихідні" in density_stats:
                         wd, we = density_stats["Будні"], density_stats["Вихідні"]
                         ratio = we["std"] / wd["std"] if wd["std"] > 0 else 1.0
@@ -1771,7 +1827,6 @@ with tab4:
                                     f"(різниця ≈ {-diff_med:.1f} п.п.)."
                                 )
 
-                    # 2. Асиметрія — куди «хвіст»
                     for name, s in density_stats.items():
                         if s["skew"] > 0.5:
                             business_lines.append(
@@ -1786,7 +1841,6 @@ with tab4:
                                 f"(мін. {s['min']:+.1f}%). Можливі простої або недозавантаження."
                             )
 
-                    # 3. Загальний висновок по стабільності
                     avg_std = float(np.mean([s["std"] for s in density_stats.values()]))
                     if avg_std < 15:
                         business_lines.append(
@@ -1805,7 +1859,6 @@ with tab4:
                             f"резерв ≥ {avg_std:.0f}%."
                         )
 
-                    # 4. Вузький пік → дуже типовий день
                     for name, s in density_stats.items():
                         if s["peak_pct"] >= 40:
                             business_lines.append(
@@ -1814,7 +1867,6 @@ with tab4:
                                 f"Можна стандартизувати зміни під це значення."
                             )
 
-                    # 5. Посилання на конкретні аномальні дні
                     if not density_anomaly_points.empty:
                         top_anom = density_anomaly_points.copy()
                         top_anom["deviation"] = (
@@ -1938,4 +1990,4 @@ with tab5:
             fig_cmp.update_layout(height=380, margin=dict(l=10, r=10, t=40, b=10))
             st.plotly_chart(fig_cmp, use_container_width=True)
 
-st.caption("Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці • Час: Europe/Kyiv. • build: total-row-fix-2026-09-18-v2")
+st.caption("Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці • Час: Europe/Kyiv. • build: pct-of-month-2026-09-28")
