@@ -1,6 +1,8 @@
 import html
 import re
 import logging
+import os
+import subprocess
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -12,6 +14,56 @@ import plotly.graph_objects as go
 import plotly.io as pio
 import streamlit as st
 from google.oauth2.service_account import Credentials
+
+
+# ============================================================
+# 0. Build info (версія + дата оновлення)
+# ============================================================
+def _get_build_info():
+    """Повертає (build_number, build_date, build_time, commit_hash).
+
+    - build_number — кількість git-комітів (послідовне число).
+      Якщо git недоступний — повертає '?'.
+    - build_date / build_time — з mtime файлу app.py (оновлюється
+      автоматично при кожному деплої).
+    - commit_hash — короткий хеш поточного коміту (або None).
+    """
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    app_file = os.path.abspath(__file__)
+
+    # 1. Дата й час — з mtime файлу
+    try:
+        dt = datetime.fromtimestamp(os.path.getmtime(app_file))
+        build_date = dt.strftime("%Y-%m-%d")
+        build_time = dt.strftime("%H:%M")
+    except Exception:
+        build_date = "—"
+        build_time = "—"
+
+    # 2. Номер версії — з git (кількість комітів)
+    build_number = "?"
+    commit_hash = None
+    try:
+        res = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD"],
+            cwd=app_dir, capture_output=True, text=True, timeout=2,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            build_number = res.stdout.strip()
+
+        res = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=app_dir, capture_output=True, text=True, timeout=2,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            commit_hash = res.stdout.strip()
+    except Exception:
+        pass
+
+    return build_number, build_date, build_time, commit_hash
+
+
+APP_BUILD_NUMBER, APP_BUILD_DATE, APP_BUILD_TIME, APP_COMMIT_HASH = _get_build_info()
 
 # ============================================================
 # 1. Конфігурація сторінки
@@ -2201,4 +2253,12 @@ with tab5:
             fig_cmp.update_layout(height=380, margin=dict(l=10, r=10, t=40, b=10))
             st.plotly_chart(fig_cmp, use_container_width=True)
 
-st.caption("Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці • Час: Europe/Kyiv. • build: pct-of-month-2026-10-06")
+# ============================================================
+# Футер з build info
+# ============================================================
+_commit_part = f" • commit {APP_COMMIT_HASH}" if APP_COMMIT_HASH else ""
+st.caption(
+    f"Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці "
+    f"• Час: Europe/Kyiv. "
+    f"• build #{APP_BUILD_NUMBER} від {APP_BUILD_DATE} {APP_BUILD_TIME}{_commit_part}"
+)
