@@ -608,48 +608,33 @@ def gaussian_kde_np(data, x_grid, bandwidth=None):
     density = kernel.sum(axis=1) / (n * bandwidth * np.sqrt(2 * np.pi))
     return density
 
-def _count_modes(density, min_prominence=0.15):
-    """Рахує локальні максимуми у кривій щільності.
-    min_prominence — мінімальна висота піку відносно глобального максимуму.
-    Використовується для детекції двомодальності (наприклад, у вихідних)."""
-    if density is None or len(density) < 3:
-        return 1
-    max_d = float(np.max(density))
-    if max_d <= 0:
-        return 1
-    threshold = max_d * min_prominence
-    peaks = 0
-    for i in range(1, len(density) - 1):
-        if density[i] > density[i - 1] and density[i] > density[i + 1] and density[i] >= threshold:
-            peaks += 1
-    return max(1, peaks)
-
 def analyze_density(group_names, dev_data):
-    """Аналізує групи відхилень.
+    """
+    Описова статистика для груп відхилень від середнього.
 
-    Виправлення порівняно з початковою версією:
-    - пік кривої рахується через KDE-сітку, а не через гістограму;
-    - skew повертає None, якщо n < 3 (а не NaN);
-    - додається кількість мод (n_modes) для детекції двомодальності;
-    - окремо повертається ознака малої вибірки (small_sample).
+    KDE використовується лише як візуальний орієнтир. При малих n
+    форма KDE, кількість піків та їх положення не трактуються як
+    надійний статистичний висновок.
     """
     stats = {}
+
     for name, data in zip(group_names, dev_data):
-        if data is None or len(data) < 2:
-            continue
-        data = np.asarray(data, dtype=float)
-        data = data[np.isfinite(data)]
-        n = len(data)
-        if n < 2:
+        if data is None:
             continue
 
-        # σ з ddof=1 (вибіркове), а не ddof=0
-        std_d = float(np.std(data, ddof=1)) if n > 1 else 0.0
+        data = np.asarray(data, dtype=float)
+        data = data[np.isfinite(data)]
+
+        if len(data) < 2:
+            continue
+
+        n = len(data)
+        std_d = float(np.std(data, ddof=0))
         median_d = float(np.median(data))
         p25, p75 = np.percentile(data, [25, 75])
         iqr = float(p75 - p25)
 
-        # Skew: тільки якщо n >= 3, інакше None
+        # Skewness при дуже малих вибірках не інтерпретуємо.
         if n >= 3:
             try:
                 skew_val = float(pd.Series(data).skew())
@@ -660,51 +645,93 @@ def analyze_density(group_names, dev_data):
         else:
             skew_val = None
 
-        # Пік кривої через KDE-сітку
-        x_min, x_max = float(data.min()), float(data.max())
-        span = max(1.0, x_max - x_min)
-        x_grid = np.linspace(x_min - 0.2 * span, x_max + 0.2 * span, 400)
-        density = gaussian_kde_np(data, x_grid)
-        peak_idx = int(np.argmax(density))
-        peak_center = float(x_grid[peak_idx])
-        n_modes = _count_modes(density)
+        # Центр найбільш заповненого інтервалу.
+        # Це опис поточної вибірки, а не "найімовірніше значення".
+        bins = max(2, min(12, n))
+        hist, edges = np.histogram(data, bins=bins)
+        peak_idx = int(np.argmax(hist))
+        peak_center = float((edges[peak_idx] + edges[peak_idx + 1]) / 2)
+        peak_count = int(hist[peak_idx])
+        peak_height_pct = float(peak_count / n * 100)
 
-        # Ширина
-        if std_d < 15:
-            width_key = "вузька"
-            width_txt = f"вузька (σ = {std_d:.1f}%) — дні стабільні"
+        # Якісну оцінку ширини кривої при n < 5 не робимо.
+        if n < 5:
+            width_key = "insufficient"
+            width_txt = (
+                f"σ = {std_d:.1f}%, але оцінка розкиду ненадійна "
+                f"через малу вибірку (n = {n})"
+            )
+        elif std_d < 15:
+            width_key = "narrow"
+            width_txt = f"σ = {std_d:.1f}% — відносно невеликий розкид"
         elif std_d < 30:
-            width_key = "середня"
-            width_txt = f"середня (σ = {std_d:.1f}%) — помірна варіативність"
+            width_key = "medium"
+            width_txt = f"σ = {std_d:.1f}% — помітний розкид"
         else:
-            width_key = "широка"
-            width_txt = f"широка (σ = {std_d:.1f}%) — великий розкид"
+            width_key = "wide"
+            width_txt = f"σ = {std_d:.1f}% — значний розкид"
 
-        # Асиметрія
         if skew_val is None:
-            skew_txt = "неможливо визначити (замало даних: n < 3)"
+            skew_txt = f"асиметрію надійно оцінити неможливо (n = {n})"
         elif abs(skew_val) < 0.3:
-            skew_txt = "симетричний"
+            skew_txt = f"близький до симетричного (skew = {skew_val:+.2f})"
         elif skew_val > 0:
-            skew_txt = f"зміщений вправо (хвіст у бік підвищених днів, skew = {skew_val:+.2f})"
+            skew_txt = (
+                f"зміщений вправо — довший хвіст у бік підвищених днів "
+                f"(skew = {skew_val:+.2f})"
+            )
         else:
-            skew_txt = f"зміщений вліво (хвіст у бік знижених днів, skew = {skew_val:+.2f})"
+            skew_txt = (
+                f"зміщений вліво — довший хвіст у бік знижених днів "
+                f"(skew = {skew_val:+.2f})"
+            )
+
+        if n < 3:
+            reliability = "very_low"
+            reliability_txt = (
+                f"n = {n} — надто мало спостережень для статистичних висновків"
+            )
+        elif n < 5:
+            reliability = "low"
+            reliability_txt = (
+                f"n = {n} — дуже мала вибірка, висновки лише попередні"
+            )
+        elif n < 15:
+            reliability = "low"
+            reliability_txt = (
+                f"n = {n} — мала вибірка, форма KDE нестабільна"
+            )
+        elif n < 20:
+            reliability = "moderate"
+            reliability_txt = (
+                f"n = {n} — вибірка ще невелика для впевненої оцінки форми KDE"
+            )
+        else:
+            reliability = "good"
+            reliability_txt = (
+                f"n = {n} — достатньо спостережень для обережної інтерпретації KDE"
+            )
 
         stats[name] = {
             "n": n,
             "std": std_d,
             "median": median_d,
+            "q25": float(p25),
+            "q75": float(p75),
             "iqr": iqr,
             "skew": skew_val,
             "peak": peak_center,
-            "n_modes": n_modes,
+            "peak_pct": peak_height_pct,
+            "peak_count": peak_count,
             "width_key": width_key,
             "width_txt": width_txt,
             "skew_txt": skew_txt,
+            "reliability": reliability,
+            "reliability_txt": reliability_txt,
             "min": float(data.min()),
             "max": float(data.max()),
-            "small_sample": n < 15,
         }
+
     return stats
 
 def forecast_scenarios(df, current_month):
@@ -1784,7 +1811,26 @@ with tab4:
                     x_grid = np.linspace(x_min, x_max, 200)
                     density = gaussian_kde_np(data, x_grid)
                     max_density = max(max_density, max(density))
-                    fig_density.add_trace(go.Scatter(x=x_grid, y=density, mode='lines', name=group_name, line=dict(color=colors.get(group_name, "gray"), width=2.5), fill='none'))
+                    line_dash = "dash" if len(data) < 5 else "solid"
+                    display_name = (
+                        f"{group_name} (n={len(data)}, лише орієнтир)"
+                        if len(data) < 5
+                        else group_name
+                    )
+                    fig_density.add_trace(
+                        go.Scatter(
+                            x=x_grid,
+                            y=density,
+                            mode='lines',
+                            name=display_name,
+                            line=dict(
+                                color=colors.get(group_name, "gray"),
+                                width=2.5,
+                                dash=line_dash,
+                            ),
+                            fill='none'
+                        )
+                    )
             if max_density > 0:
                 fig_density.add_trace(go.Scatter(x=[0,0], y=[0, max_density*1.1], mode='lines', name='Середнє (0%)', line=dict(color=KPO_RED, width=2, dash='dash'), showlegend=True))
                 median_all = np.median(dev_all) if len(dev_all) > 0 else None
@@ -1792,6 +1838,12 @@ with tab4:
                     fig_density.add_trace(go.Scatter(x=[median_all, median_all], y=[0, max_density*1.1], mode='lines', name=f'Медіана ({median_all:.1f}%)', line=dict(color=KPO_TEXT, width=2, dash='dash'), showlegend=True))
             fig_density.update_layout(title="Криві щільності відхилень від середнього", xaxis_title="Відхилення, %", yaxis_title="Щільність", height=400, margin=dict(l=10, r=10, t=40, b=10), legend=dict(title="Група / лінії", x=0.98, y=0.98, xanchor='right', yanchor='top', bgcolor='rgba(0,0,0,0)'), hovermode="x unified")
             st.plotly_chart(fig_density, use_container_width=True)
+            if any(len(data) < 5 for data in dev_data):
+                st.caption(
+                    "Пунктирні криві побудовані для малих груп (n < 5) і показані "
+                    "лише для візуального орієнтиру. Їх форму та кількість піків "
+                    "не слід трактувати як надійний статистичний висновок."
+                )
 
             density_stats = analyze_density(group_names, dev_data)
 
@@ -1806,70 +1858,91 @@ with tab4:
                     st.info("Недостатньо даних для опису.")
                 else:
                     st.markdown(
-                        "Нижче — опис **саме ваших кривих**, обчислений за поточний період. "
-                        "Відхилення вимірюється у % від середнього: 0% — типовий день, "
-                        "+20% — день на 20% інтенсивніший за середній."
+                        "Нижче — опис **саме ваших даних** за поточний період. "
+                        "Відхилення вимірюється у % від середнього: "
+                        "0% — середній рівень, +20% — день на 20% інтенсивніший "
+                        "за середній."
                     )
 
                     total_n = sum(s["n"] for s in density_stats.values())
-                    if any(s["small_sample"] for s in density_stats.values()):
+
+                    if any(s["n"] < 15 for s in density_stats.values()):
                         st.warning(
-                            f"⚠️ **Мало даних для побудови кривих щільності (KDE).** "
-                            f"Загальна кількість спостережень: n = {total_n}. "
-                            f"KDE-криві коректно інтерпретувати при n ≥ 15–20 на групу. "
-                            f"Для малих вибірок форма кривої (особливо двомодальність) "
-                            f"є артефактом згладжування, а не реальною властивістю розподілу. "
-                            f"Сприймайте висновки як попередні гіпотези."
+                            f"**Мала вибірка:** загальна кількість спостережень "
+                            f"у побудованих групах — n = {total_n}. "
+                            "Для груп із n < 15 форма KDE є нестабільною, тому "
+                            "кількість піків, їх положення та форма кривої "
+                            "не можуть використовуватися як надійний опис "
+                            "реального розподілу. Нижче наведено переважно "
+                            "описову статистику та попередні гіпотези."
                         )
 
                     for name, s in density_stats.items():
-                        lines = [f"**🔹 {name}** (n = {s['n']} дн.)"]
+                        st.markdown(f"**🔹 {name}** (n = {s['n']} днів)")
 
-                        if s["n_modes"] >= 2:
-                            lines.append(
-                                f"- Крива має **{s['n_modes']} виражених піки** "
-                                f"(двомодальний розподіл). Один з них — біля **{s['peak']:+.1f}%**. "
-                                f"Це може свідчити про дві різні «популяції» днів у групі."
+                        if s["n"] >= 5:
+                            st.markdown(
+                                f"- Найбільш заповнений інтервал даних має центр "
+                                f"приблизно **{s['peak']:+.1f}%** "
+                                f"(у ньому опинилося близько {s['peak_pct']:.0f}% "
+                                "спостережень). Це опис вибірки, а не оцінка "
+                                "реального «найімовірнішого дня»."
                             )
                         else:
-                            lines.append(
-                                f"- Пік кривої припадає на **{s['peak']:+.1f}%** — "
-                                f"найімовірніше значення навантаження у цій групі."
+                            st.markdown(
+                                f"- Через малу вибірку **n = {s['n']}** окремий "
+                                "пік/мода розподілу надійно визначити неможливо."
                             )
 
-                        lines.append(
-                            f"- Медіана = **{s['median']:+.1f}%**, IQR = **{s['iqr']:.1f} п.п.** "
-                            f"(50% днів лежать у межах ±{s['iqr']/2:.1f} п.п. навколо медіани)."
+                        st.markdown(
+                            f"- Медіана = **{s['median']:+.1f}%**, "
+                            f"IQR = **{s['iqr']:.1f} п.п.** "
+                            f"(центральні 50% спостережень лежать між "
+                            f"**{s['q25']:+.1f}%** та **{s['q75']:+.1f}%**)."
                         )
 
-                        lines.append(f"- Розподіл **{s['skew_txt']}**.")
-                        lines.append(f"- Форма кривої **{s['width_txt']}**.")
-                        lines.append(
-                            f"- Діапазон відхилень: від **{s['min']:+.1f}%** до **{s['max']:+.1f}%**."
+                        st.markdown(f"- Розподіл **{s['skew_txt']}**.")
+                        st.markdown(f"- Розкид: **{s['width_txt']}**.")
+                        st.markdown(
+                            f"- Діапазон фактичних відхилень: "
+                            f"від **{s['min']:+.1f}%** до **{s['max']:+.1f}%**."
+                        )
+                        st.markdown(
+                            f"- Надійність інтерпретації: **{s['reliability_txt']}**."
                         )
 
-                        if s["small_sample"]:
-                            lines.append(
-                                f"- ⚠️ *n = {s['n']} — недостатньо для надійних статистичних висновків.*"
+                        if s["n"] <= 2:
+                            st.info(
+                                f"Для **{name}** маємо лише {s['n']} спостереження. "
+                                "Форму KDE, двомодальність, skew та стабільність "
+                                "цієї групи не слід інтерпретувати як статистичний "
+                                "висновок."
                             )
 
-                        st.markdown("\n".join(lines))
                         st.markdown("")
 
                     if len(density_stats) > 1:
-                        widest = max(density_stats.items(), key=lambda kv: kv[1]["std"])
-                        narrowest = min(density_stats.items(), key=lambda kv: kv[1]["std"])
-                        st.markdown(
-                            f"**Порівняння груп:** найширший розкид — у **{widest[0]}** "
-                            f"(σ = {widest[1]['std']:.1f}%), найвужчий — у **{narrowest[0]}** "
-                            f"(σ = {narrowest[1]['std']:.1f}%). "
-                            f"Різниця у стабільності ≈ **{widest[1]['std'] - narrowest[1]['std']:.1f} п.п.**"
+                        widest = max(
+                            density_stats.items(),
+                            key=lambda kv: kv[1]["std"]
                         )
-                        if narrowest[1]["small_sample"]:
-                            st.caption(
-                                f"ℹ️ Група «{narrowest[0]}» має лише {narrowest[1]['n']} спостережень — "
-                                f"її σ може бути суттєво заниженою через малу вибірку."
-                            )
+                        narrowest = min(
+                            density_stats.items(),
+                            key=lambda kv: kv[1]["std"]
+                        )
+
+                        st.markdown(
+                            f"**Порівняння груп:** найбільший фактичний розкид "
+                            f"у вибірці має **{widest[0]}** "
+                            f"(σ = {widest[1]['std']:.1f}%), "
+                            f"найменший — **{narrowest[0]}** "
+                            f"(σ = {narrowest[1]['std']:.1f}%)."
+                        )
+                        st.caption(
+                            "Це лише опис поточної вибірки. Через різну кількість "
+                            "спостережень у групах така різниця не означає, що "
+                            "одна група статистично стабільніша за іншу."
+                        )
 
             with st.expander("❓ Як це інтерпретувати для бізнесу? (висновки за вашими даними)"):
                 if not density_stats:
@@ -1877,96 +1950,119 @@ with tab4:
                 else:
                     business_lines = []
 
-                    if any(s["small_sample"] for s in density_stats.values()):
+                    min_group_n = min(s["n"] for s in density_stats.values())
+
+                    if min_group_n < 15:
                         business_lines.append(
-                            "⚠️ **Застереження:** частина груп має n < 15. "
-                            "Нижче — попередні висновки, які варто перевірити на більшій вибірці "
-                            "(хоча б 2–3 тижні спостережень)."
+                            "⚠️ **Застереження:** частина груп має малу вибірку "
+                            f"(мінімум n = {min_group_n}). "
+                            "Наведені нижче висновки є описовими та потребують "
+                            "перевірки на більшій кількості спостережень."
                         )
 
                     if "Будні" in density_stats and "Вихідні" in density_stats:
-                        wd, we = density_stats["Будні"], density_stats["Вихідні"]
-                        ratio = we["std"] / wd["std"] if wd["std"] > 0 else 1.0
-                        if ratio > 1.3:
-                            business_lines.append(
-                                f"🔴 **Вихідні менш передбачувані за будні.** "
-                                f"Розкид у вихідні σ = {we['std']:.1f}% проти σ = {wd['std']:.1f}% у будні "
-                                f"(у {ratio:.1f}× більше). Варто тримати додатковий резерв потужності саме на вихідні."
-                            )
-                        elif ratio < 0.7:
-                            business_lines.append(
-                                f"🟢 **Вихідні стабільніші за будні** (σ = {we['std']:.1f}% проти {wd['std']:.1f}%). "
-                                f"Пікові навантаження концентруються у будні — плануйте ресурси саме туди."
-                            )
-                        else:
-                            business_lines.append(
-                                f"ℹ️ **Стабільність буднів і вихідних схожа** "
-                                f"(σ = {wd['std']:.1f}% і {we['std']:.1f}%). "
-                                f"Окремий резерв під вихідні не потрібен."
-                            )
-
+                        wd = density_stats["Будні"]
+                        we = density_stats["Вихідні"]
                         diff_med = wd["median"] - we["median"]
+
                         if abs(diff_med) > 5:
                             if diff_med > 0:
                                 business_lines.append(
-                                    f"📊 **У будні типове навантаження вище** — медіана відхилення "
-                                    f"{wd['median']:+.1f}% проти {we['median']:+.1f}% у вихідні "
+                                    f"📊 **У поточній вибірці медіана буднів вища**, "
+                                    f"ніж у вихідних: {wd['median']:+.1f}% "
+                                    f"проти {we['median']:+.1f}% "
                                     f"(різниця ≈ {diff_med:.1f} п.п.)."
                                 )
                             else:
                                 business_lines.append(
-                                    f"📊 **У вихідні типове навантаження вище** — медіана "
-                                    f"{we['median']:+.1f}% проти {wd['median']:+.1f}% у будні "
+                                    f"📊 **У поточній вибірці медіана вихідних вища**, "
+                                    f"ніж у буднів: {we['median']:+.1f}% "
+                                    f"проти {wd['median']:+.1f}% "
                                     f"(різниця ≈ {-diff_med:.1f} п.п.)."
                                 )
 
+                            business_lines.append(
+                                "ℹ️ Це опис поточних спостережень, а не доказ "
+                                "стабільної різниці між буднями та вихідними."
+                            )
+
+                        if wd["std"] > 0:
+                            ratio = we["std"] / wd["std"]
+                        else:
+                            ratio = None
+
+                        if ratio is not None and abs(ratio - 1) >= 0.3:
+                            if ratio < 1:
+                                business_lines.append(
+                                    f"ℹ️ **У поточній вибірці вихідні мають менший "
+                                    f"розкид**, ніж будні "
+                                    f"(σ = {we['std']:.1f}% проти "
+                                    f"{wd['std']:.1f}%)."
+                                )
+                            else:
+                                business_lines.append(
+                                    f"ℹ️ **У поточній вибірці вихідні мають більший "
+                                    f"розкид**, ніж будні "
+                                    f"(σ = {we['std']:.1f}% проти "
+                                    f"{wd['std']:.1f}%)."
+                                )
+
+                            if we["n"] < 5 or wd["n"] < 5:
+                                business_lines.append(
+                                    "⚠️ Через малу кількість спостережень це "
+                                    "не слід трактувати як доказ того, що одна "
+                                    "група стабільніша за іншу."
+                                )
+
                     for name, s in density_stats.items():
-                        if s["skew"] is None:
+                        if s["n"] < 5 or s["skew"] is None:
                             continue
+
                         if s["skew"] > 0.5:
                             business_lines.append(
-                                f"⚠️ **{name}: асиметрія вправо** (skew = {s['skew']:+.2f}). "
-                                f"Більшість днів нижче середнього, але трапляються рідкісні "
-                                f"пікові дні (макс. {s['max']:+.1f}%). Це «дорогі» дні — потрібен запас."
+                                f"⚠️ **{name}: спостерігається асиметрія вправо** "
+                                f"(skew = {s['skew']:+.2f}). "
+                                f"У вибірці є довший хвіст у бік підвищених "
+                                f"значень; максимальне відхилення — "
+                                f"{s['max']:+.1f}%."
                             )
                         elif s["skew"] < -0.5:
                             business_lines.append(
-                                f"⚠️ **{name}: асиметрія вліво** (skew = {s['skew']:+.2f}). "
-                                f"Більшість днів вище середнього, зрідка — провали "
-                                f"(мін. {s['min']:+.1f}%). Можливі простої або недозавантаження."
-                            )
-
-                    for name, s in density_stats.items():
-                        if s["n_modes"] >= 2 and s["n"] >= 10:
-                            business_lines.append(
-                                f"🔀 **{name}: двомодальний розподіл** ({s['n_modes']} піки). "
-                                f"У групі, схоже, змішані два різні типи днів. "
-                                f"Варто розділити їх (наприклад, за святами, днями тижня тощо) "
-                                f"і планувати ресурси окремо."
-                            )
-                        elif s["n_modes"] >= 2 and s["n"] < 10:
-                            business_lines.append(
-                                f"ℹ️ **{name}: крива має {s['n_modes']} піки, але n = {s['n']} —** "
-                                f"це майже напевно артефакт згладжування (KDE «обгортає» кожну точку), "
-                                f"а не реальна двомодальність."
+                                f"⚠️ **{name}: спостерігається асиметрія вліво** "
+                                f"(skew = {s['skew']:+.2f}). "
+                                f"У вибірці є довший хвіст у бік знижених "
+                                f"значень; мінімальне відхилення — "
+                                f"{s['min']:+.1f}%."
                             )
 
                     avg_std = float(np.mean([s["std"] for s in density_stats.values()]))
-                    if avg_std < 15:
+                    business_lines.append(
+                        f"📈 **Середній σ за групами = {avg_std:.1f}%.** "
+                        "Це показник варіативності поточної вибірки, "
+                        "а не рекомендований відсоток резерву ресурсів."
+                    )
+
+                    if avg_std >= 30:
                         business_lines.append(
-                            f"✅ **Загальна стабільність висока** (середнє σ = {avg_std:.1f}%). "
-                            f"Можна планувати ресурси за середнім без великого запасу."
+                            "⚠️ У поточних даних спостерігаються значні "
+                            "коливання навантаження. Для планування доцільно "
+                            "враховувати не лише середнє значення, а й фактичні "
+                            "пікові дні."
                         )
-                    elif avg_std < 30:
+                    elif avg_std >= 15:
                         business_lines.append(
-                            f"🟡 **Помірна варіативність** (середнє σ = {avg_std:.1f}%). "
-                            f"Рекомендується тримати резерв ≈ {avg_std:.0f}% від середнього на пікові дні."
+                            "ℹ️ У поточних даних присутні помітні коливання "
+                            "навантаження. Для планування бажано враховувати "
+                            "розподіл фактичних значень, а не лише середнє."
                         )
-                    else:
+
+                    if any(s["n"] < 15 for s in density_stats.values()):
                         business_lines.append(
-                            f"🔴 **Висока варіативність** (середнє σ = {avg_std:.1f}%). "
-                            f"Навантаження погано прогнозується — потрібне гнучке планування змін і "
-                            f"резерв ≥ {avg_std:.0f}%."
+                            "ℹ️ **KDE використовується тут переважно для "
+                            "візуального орієнтиру.** За малої вибірки форма "
+                            "кривої та кількість її піків можуть бути наслідком "
+                            "згладжування, тому не варто використовувати їх "
+                            "як основу для операційних рішень."
                         )
 
                     if not density_anomaly_points.empty:
@@ -1976,28 +2072,41 @@ with tab4:
                             / top_anom["rolling_median"].replace(0, np.nan) * 100
                         )
                         top_anom = top_anom.dropna(subset=["deviation"])
+
                         if not top_anom.empty:
-                            top_pos = top_anom.sort_values("deviation", ascending=False).head(1)
-                            top_neg = top_anom.sort_values("deviation", ascending=True).head(1)
+                            top_pos = top_anom.sort_values(
+                                "deviation", ascending=False
+                            ).head(1)
+                            top_neg = top_anom.sort_values(
+                                "deviation", ascending=True
+                            ).head(1)
 
                             if not top_pos.empty and top_pos.iloc[0]["deviation"] > 5:
                                 r = top_pos.iloc[0]
                                 business_lines.append(
-                                    f"📌 **Найбільший сплеск**: {r['date'].strftime('%d.%m.%Y')} — "
-                                    f"{r['value']:,.0f} операцій (відхилення {r['deviation']:+.1f}% "
-                                    f"від локальної медіани). Деталі — у табі «📈 Динаміка», блок «🔍 Аномальні дні»."
+                                    f"📌 **Найбільший локальний сплеск:** "
+                                    f"{r['date'].strftime('%d.%m.%Y')} — "
+                                    f"{r['value']:,.0f} операцій "
+                                    f"(відхилення {r['deviation']:+.1f}% "
+                                    "від локальної медіани). Деталі — у табі "
+                                    "«📈 Динаміка», блок «🔍 Аномальні дні»."
                                 )
+
                             if not top_neg.empty and top_neg.iloc[0]["deviation"] < -5:
                                 r = top_neg.iloc[0]
                                 business_lines.append(
-                                    f"📌 **Найбільший провал**: {r['date'].strftime('%d.%m.%Y')} — "
-                                    f"{r['value']:,.0f} операцій (відхилення {r['deviation']:+.1f}% "
-                                    f"від локальної медіани). Можлива причина — свято, збій у подачі заявок "
-                                    f"або неповне внесення даних."
+                                    f"📌 **Найбільший локальний спад:** "
+                                    f"{r['date'].strftime('%d.%m.%Y')} — "
+                                    f"{r['value']:,.0f} операцій "
+                                    f"(відхилення {r['deviation']:+.1f}% "
+                                    "від локальної медіани). Причину варто "
+                                    "перевірити окремо: свято, зміна попиту, "
+                                    "збій або неповне внесення даних."
                                 )
 
                     for line in business_lines:
                         st.markdown(f"- {line}")
+
 
         else:
             st.info("Недостатньо даних для побудови кривих щільності.")
@@ -2092,4 +2201,4 @@ with tab5:
             fig_cmp.update_layout(height=380, margin=dict(l=10, r=10, t=40, b=10))
             st.plotly_chart(fig_cmp, use_container_width=True)
 
-st.caption("Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці • Час: Europe/Kyiv. • build: pct-of-month-2026-09-28")
+st.caption("Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці • Час: Europe/Kyiv. • build: pct-of-month-2026-10-06")
