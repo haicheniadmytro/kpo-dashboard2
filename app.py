@@ -33,7 +33,7 @@ def _get_build_info():
 
     # 1. Дата й час — з mtime файлу
     try:
-        dt = datetime.fromtimestamp(mtime, tz=ZoneInfo("Europe/Kyiv"))
+        dt = datetime.fromtimestamp(mtime)
         build_date = dt.strftime("%Y-%m-%d")
         build_time = dt.strftime("%H:%M")
     except Exception:
