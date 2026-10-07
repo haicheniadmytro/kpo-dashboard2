@@ -1451,52 +1451,99 @@ with tab1:
 
     st.divider()
 
-    # --- Динаміка за період ---
+    # --- Динаміка за період (стовпчаста діаграма з накопиченням) ---
     st.subheader("📈 Динаміка за період")
+
+    # Агрегуємо по днях: total + окремо TRUE і FALSE
+    daily = filtered.groupby("date", as_index=False).agg(
+        value=("value", "sum"),
+        sum_true=("sum_true", "sum"),
+        sum_false=("sum_false", "sum"),
+    )
+    daily = daily.sort_values("date").reset_index(drop=True)
+
+    # Lookup місячних тоталів — для % дня за місяць (знаменник = повний місяць
+    # по вибраних операціях, а не лише по видимих днях)
     if operation_mode == "Тотал":
-        daily = filtered.groupby("date")["value"].sum().reset_index()
-        daily["operation"] = "Тотал"
-        daily = _add_pct_of_month(daily, _monthly_lookup_full)
-
-        fig_overview = px.line(
-            daily, x="date", y="value", markers=True,
-            text="label",
-            labels={"date": "Дата", "value": "Кількість"},
-            color_discrete_sequence=[KPO_CYAN],
+        monthly_lookup_agg = (
+            df[df["operation"] == "Тотал"]
+            .assign(month_key=lambda d: d["date"].dt.strftime("%Y-%m"))
+            .groupby("month_key")["value"].sum()
+            .to_dict()
         )
-        fig_overview.update_traces(
-            textposition="top center",
-            textfont=dict(size=10, color=KPO_TEXT),
-            cliponaxis=False,
-        )
-        fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
-
-        if smooth_enabled:
-            daily["value_smooth"] = daily["value"].rolling(window=smooth_window, min_periods=1, center=True).mean()
-            fig_overview.add_scatter(x=daily["date"], y=daily["value_smooth"], mode="lines", name=f"Ковзне середнє ({smooth_window} дн.)", line=dict(color=KPO_AMBER, width=3))
-
-        anomalies = detect_anomalies(filtered, window=14, threshold=3.0)
-        if not anomalies.empty:
-            anomaly_points = anomalies[anomalies["is_anomaly"]]
-            if not anomaly_points.empty:
-                fig_overview.add_scatter(x=anomaly_points["date"], y=anomaly_points["value"], mode="markers", marker=dict(color=KPO_RED, size=10, symbol="x"), name="Аномалія")
     else:
-        plot_df = _add_pct_of_month(filtered, _monthly_lookup_full)
-
-        fig_overview = px.line(
-            plot_df, x="date", y="value",
-            color="operation", markers=True,
-            text="label",
-            labels={"date": "Дата", "value": "Кількість", "operation": "Операція"},
+        monthly_lookup_agg = (
+            df[df["operation"].isin(selected_operations)]
+            .assign(month_key=lambda d: d["date"].dt.strftime("%Y-%m"))
+            .groupby("month_key")["value"].sum()
+            .to_dict()
         )
-        fig_overview.update_traces(
-            textposition="top center",
-            textfont=dict(size=9),
-            cliponaxis=False,
-        )
-        fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
-    fig_overview.update_layout(height=420, hovermode="x unified", margin=dict(l=10, r=10, t=20, b=10))
+    daily["month_key"] = daily["date"].dt.strftime("%Y-%m")
+    daily["month_total"] = daily["month_key"].map(monthly_lookup_agg).fillna(0)
+    daily["pct_of_month"] = np.where(
+        daily["month_total"] > 0,
+        daily["value"] / daily["month_total"] * 100,
+        np.nan,
+    )
+
+    fig_overview = go.Figure()
+
+    # Нижній шар — відмови (FALSE), підпис усередині
+    fig_overview.add_trace(go.Bar(
+        x=daily["date"],
+        y=daily["sum_false"],
+        name="Відхилено (FALSE)",
+        marker_color=KPO_RED,
+        text=[f"{v:.0f}" if v > 0 else "" for v in daily["sum_false"]],
+        textposition="inside",
+        insidetextanchor="middle",
+        textfont=dict(size=11, color="white"),
+        hovertemplate="Відхилено: %{y:.0f}<extra></extra>",
+    ))
+
+    # Верхній шар — погодження (TRUE), підпис усередині
+    fig_overview.add_trace(go.Bar(
+        x=daily["date"],
+        y=daily["sum_true"],
+        name="Погоджено (TRUE)",
+        marker_color=KPO_GREEN,
+        text=[f"{v:.0f}" if v > 0 else "" for v in daily["sum_true"]],
+        textposition="inside",
+        insidetextanchor="middle",
+        textfont=dict(size=11, color="white"),
+        hovertemplate="Погоджено: %{y:.0f}<extra></extra>",
+    ))
+
+    # Підпис над стовпчиком — тотал + % дня за місяць
+    total_labels = []
+    for _, r in daily.iterrows():
+        if pd.notna(r["pct_of_month"]):
+            total_labels.append(f"{r['value']:.0f}<br>{r['pct_of_month']:.1f}%")
+        else:
+            total_labels.append(f"{r['value']:.0f}")
+
+    fig_overview.add_trace(go.Scatter(
+        x=daily["date"],
+        y=daily["value"],
+        mode="text",
+        text=total_labels,
+        textposition="top center",
+        textfont=dict(size=10, color=KPO_TEXT),
+        showlegend=False,
+        hoverinfo="skip",
+    ))
+
+    fig_overview.update_layout(
+        barmode="stack",
+        height=420,
+        margin=dict(l=10, r=10, t=30, b=10),
+        bargap=0.25,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="x unified",
+    )
+    fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
+    fig_overview.update_yaxes(title_text="Кількість")
     st.plotly_chart(fig_overview, use_container_width=True)
 
 # ============================================================
