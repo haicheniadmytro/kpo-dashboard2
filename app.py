@@ -1487,6 +1487,16 @@ with tab1:
         np.nan,
     )
 
+    # ----- Поріг для підписів усередині сегментів -----
+    # Якщо сегмент нижчий за цей поріг, цифра всередині стає нечитабельною,
+    # тому для таких сегментів підпис виносимо за межі стовпчика (праворуч/ліворуч).
+    max_total = float(daily["value"].max()) if not daily.empty else 0
+    y_max = max_total * 1.18 if max_total > 0 else 10
+    label_threshold = max(2.0, max_total * 0.04)
+
+    false_inside = [f"{v:.0f}" if v >= label_threshold else "" for v in daily["sum_false"]]
+    true_inside = [f"{v:.0f}" if v >= label_threshold else "" for v in daily["sum_true"]]
+
     fig_overview = go.Figure()
 
     # Нижній шар — відмови (FALSE), підпис усередині
@@ -1495,11 +1505,12 @@ with tab1:
         y=daily["sum_false"],
         name="Відхилено (FALSE)",
         marker_color=KPO_RED,
-        text=[f"{v:.0f}" if v > 0 else "" for v in daily["sum_false"]],
+        text=false_inside,
         textposition="inside",
         insidetextanchor="middle",
         textfont=dict(size=11, color="white"),
         hovertemplate="Відхилено: %{y:.0f}<extra></extra>",
+        cliponaxis=False,
     ))
 
     # Верхній шар — погодження (TRUE), підпис усередині
@@ -1508,11 +1519,12 @@ with tab1:
         y=daily["sum_true"],
         name="Погоджено (TRUE)",
         marker_color=KPO_GREEN,
-        text=[f"{v:.0f}" if v > 0 else "" for v in daily["sum_true"]],
+        text=true_inside,
         textposition="inside",
         insidetextanchor="middle",
         textfont=dict(size=11, color="white"),
         hovertemplate="Погоджено: %{y:.0f}<extra></extra>",
+        cliponaxis=False,
     ))
 
     # Підпис над стовпчиком — тотал + % дня за місяць
@@ -1534,16 +1546,43 @@ with tab1:
         hoverinfo="skip",
     ))
 
+    # Зовнішні анотації для маленьких сегментів — щоб цифри були читабельними
+    small_annotations = []
+    for _, r in daily.iterrows():
+        if 0 < r["sum_false"] < label_threshold:
+            small_annotations.append(dict(
+                x=r["date"],
+                y=r["sum_false"] / 2,
+                text=f"{r['sum_false']:.0f}",
+                showarrow=False,
+                xshift=-16, xanchor="right",
+                font=dict(size=10, color=KPO_RED),
+                bgcolor=KPO_BG,
+                bordercolor=KPO_RED, borderwidth=1, borderpad=2,
+            ))
+        if 0 < r["sum_true"] < label_threshold:
+            small_annotations.append(dict(
+                x=r["date"],
+                y=r["sum_false"] + r["sum_true"] / 2,
+                text=f"{r['sum_true']:.0f}",
+                showarrow=False,
+                xshift=16, xanchor="left",
+                font=dict(size=10, color=KPO_GREEN),
+                bgcolor=KPO_BG,
+                bordercolor=KPO_GREEN, borderwidth=1, borderpad=2,
+            ))
+
     fig_overview.update_layout(
         barmode="stack",
         height=420,
         margin=dict(l=10, r=10, t=30, b=10),
-        bargap=0.25,
+        bargap=0.35,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hovermode="x unified",
+        annotations=small_annotations,
     )
     fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
-    fig_overview.update_yaxes(title_text="Кількість")
+    fig_overview.update_yaxes(title_text="Кількість", range=[0, y_max])
     st.plotly_chart(fig_overview, use_container_width=True)
 
 # ============================================================
