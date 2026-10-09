@@ -20,13 +20,16 @@ from google.oauth2.service_account import Credentials
 # 0. Build info (версія + дата оновлення)
 # ============================================================
 def _get_build_info():
-    """Повертає (build_number, build_date, build_time, commit_hash).
+    """Повертає (build_number, build_date, build_time, commit_hash, commit_subject).
 
     - build_number — кількість git-комітів (послідовне число).
       Якщо git недоступний — повертає '?'.
     - build_date / build_time — з mtime файлу app.py (оновлюється
       автоматично при кожному деплої).
     - commit_hash — короткий хеш поточного коміту (або None).
+    - commit_subject — subject останнього коміту (або None).
+      Використовується як fallback для футера, якщо LAST_UPDATE_NOTE
+      не заповнено.
     """
     app_dir = os.path.dirname(os.path.abspath(__file__))
     app_file = os.path.abspath(__file__)
@@ -43,6 +46,7 @@ def _get_build_info():
     # 2. Номер версії — з git (кількість комітів)
     build_number = "?"
     commit_hash = None
+    commit_subject = None
     try:
         res = subprocess.run(
             ["git", "rev-list", "--count", "HEAD"],
@@ -57,13 +61,38 @@ def _get_build_info():
         )
         if res.returncode == 0 and res.stdout.strip():
             commit_hash = res.stdout.strip()
+
+        res = subprocess.run(
+            ["git", "log", "-1", "--pretty=%s"],
+            cwd=app_dir, capture_output=True, text=True, timeout=2,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            commit_subject = res.stdout.strip()
     except Exception:
         pass
 
-    return build_number, build_date, build_time, commit_hash
+    return build_number, build_date, build_time, commit_hash, commit_subject
 
 
-APP_BUILD_NUMBER, APP_BUILD_DATE, APP_BUILD_TIME, APP_COMMIT_HASH = _get_build_info()
+(
+    APP_BUILD_NUMBER,
+    APP_BUILD_DATE,
+    APP_BUILD_TIME,
+    APP_COMMIT_HASH,
+    APP_COMMIT_SUBJECT,
+) = _get_build_info()
+
+
+# ============================================================
+# 0b. Опис останнього оновлення (для футера)
+# ============================================================
+# Оновлюйте цей рядок при кожному помітному деплої.
+# Показується у футері дашборда поруч із build-інфо.
+# Якщо залишити порожнім — у футері буде subject останнього git-коміту.
+LAST_UPDATE_NOTE = (
+    "Виправлено падіння графіка динаміки в режимі «Вибрані операції» "
+    "при виборі всіх місяців року (scattergl / Plotly)."
+)
 
 # ============================================================
 # 1. Конфігурація сторінки
@@ -865,6 +894,40 @@ def forecast_scenarios(df, current_month):
     return stat_forecast, season_forecast
 
 # ============================================================
+# 8b. Безпечне стилізування лінійних трейсів
+# ============================================================
+def _style_line_traces(fig, font_size=10, font_color=None, show_text=True):
+    """
+    Безпечно застосовує textposition / textfont / cliponaxis лише до
+    звичайних svg-трейсів (type='scatter').
+
+    Plotly Express для великих наборів даних може автоматично створювати
+    трейси типу 'scattergl' (WebGL), і в деяких версіях Plotly ці
+    властивості для них не підтримуються — масовий update_traces(...)
+    тоді падає з ValueError у basedatatypes._perform_update.
+
+    Другий аргумент show_text=False повністю прибирає підписи
+    (корисно, коли точок занадто багато і мітки все одно нечитабельні).
+    """
+    for trace in fig.data:
+        if getattr(trace, "type", None) != "scatter":
+            # scattergl та інші типи пропускаємо, щоб не втратити
+            # продуктивність WebGL і не зламати валідацію Plotly.
+            continue
+        try:
+            if show_text:
+                trace.textposition = "top center"
+                trace.textfont = (
+                    dict(size=font_size, color=font_color)
+                    if font_color else dict(size=font_size)
+                )
+                trace.cliponaxis = False
+            else:
+                trace.text = None
+        except (ValueError, TypeError) as exc:
+            logger.warning(f"Не вдалося стилізувати text-мітки трейсу: {exc}")
+
+# ============================================================
 # 9. Основна програма
 # ============================================================
 st.title("📊 Dashboard погоджень КПО")
@@ -1451,138 +1514,46 @@ with tab1:
 
     st.divider()
 
-    # --- Динаміка за період (стовпчаста діаграма з накопиченням) ---
+    # --- Динаміка за період ---
     st.subheader("📈 Динаміка за період")
-
-    # Агрегуємо по днях: total + окремо TRUE і FALSE
-    daily = filtered.groupby("date", as_index=False).agg(
-        value=("value", "sum"),
-        sum_true=("sum_true", "sum"),
-        sum_false=("sum_false", "sum"),
-    )
-    daily = daily.sort_values("date").reset_index(drop=True)
-
-    # Lookup місячних тоталів — для % дня за місяць (знаменник = повний місяць
-    # по вибраних операціях, а не лише по видимих днях)
     if operation_mode == "Тотал":
-        monthly_lookup_agg = (
-            df[df["operation"] == "Тотал"]
-            .assign(month_key=lambda d: d["date"].dt.strftime("%Y-%m"))
-            .groupby("month_key")["value"].sum()
-            .to_dict()
+        daily = filtered.groupby("date")["value"].sum().reset_index()
+        daily["operation"] = "Тотал"
+        daily = _add_pct_of_month(daily, _monthly_lookup_full)
+
+        fig_overview = px.line(
+            daily, x="date", y="value", markers=True,
+            text="label",
+            labels={"date": "Дата", "value": "Кількість"},
+            color_discrete_sequence=[KPO_CYAN],
         )
+        _style_line_traces(fig_overview, font_size=10, font_color=KPO_TEXT, show_text=True)
+        fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
+
+        if smooth_enabled:
+            daily["value_smooth"] = daily["value"].rolling(window=smooth_window, min_periods=1, center=True).mean()
+            fig_overview.add_scatter(x=daily["date"], y=daily["value_smooth"], mode="lines", name=f"Ковзне середнє ({smooth_window} дн.)", line=dict(color=KPO_AMBER, width=3))
+
+        anomalies = detect_anomalies(filtered, window=14, threshold=3.0)
+        if not anomalies.empty:
+            anomaly_points = anomalies[anomalies["is_anomaly"]]
+            if not anomaly_points.empty:
+                fig_overview.add_scatter(x=anomaly_points["date"], y=anomaly_points["value"], mode="markers", marker=dict(color=KPO_RED, size=10, symbol="x"), name="Аномалія")
     else:
-        monthly_lookup_agg = (
-            df[df["operation"].isin(selected_operations)]
-            .assign(month_key=lambda d: d["date"].dt.strftime("%Y-%m"))
-            .groupby("month_key")["value"].sum()
-            .to_dict()
+        plot_df = _add_pct_of_month(filtered, _monthly_lookup_full)
+
+        fig_overview = px.line(
+            plot_df, x="date", y="value",
+            color="operation", markers=True,
+            text="label",
+            labels={"date": "Дата", "value": "Кількість", "operation": "Операція"},
         )
+        # У режимі «Вибрані операції» точок зазвичай багато (усі місяці × операції),
+        # тому мітки прибираємо — вони все одно нечитабельні і лише створюють шум.
+        _style_line_traces(fig_overview, font_size=9, show_text=False)
+        fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
-    daily["month_key"] = daily["date"].dt.strftime("%Y-%m")
-    daily["month_total"] = daily["month_key"].map(monthly_lookup_agg).fillna(0)
-    daily["pct_of_month"] = np.where(
-        daily["month_total"] > 0,
-        daily["value"] / daily["month_total"] * 100,
-        np.nan,
-    )
-
-    # ----- Поріг для підписів усередині сегментів -----
-    # Якщо сегмент нижчий за цей поріг, цифра всередині стає нечитабельною,
-    # тому для таких сегментів підпис виносимо за межі стовпчика (праворуч/ліворуч).
-    max_total = float(daily["value"].max()) if not daily.empty else 0
-    y_max = max_total * 1.18 if max_total > 0 else 10
-    label_threshold = max(2.0, max_total * 0.04)
-
-    false_inside = [f"{v:.0f}" if v >= label_threshold else "" for v in daily["sum_false"]]
-    true_inside = [f"{v:.0f}" if v >= label_threshold else "" for v in daily["sum_true"]]
-
-    fig_overview = go.Figure()
-
-    # Нижній шар — відмови (FALSE), підпис усередині
-    fig_overview.add_trace(go.Bar(
-        x=daily["date"],
-        y=daily["sum_false"],
-        name="Відхилено (FALSE)",
-        marker_color=KPO_RED,
-        text=false_inside,
-        textposition="inside",
-        insidetextanchor="middle",
-        textfont=dict(size=11, color="white"),
-        hovertemplate="Відхилено: %{y:.0f}<extra></extra>",
-        cliponaxis=False,
-    ))
-
-    # Верхній шар — погодження (TRUE), підпис усередині
-    fig_overview.add_trace(go.Bar(
-        x=daily["date"],
-        y=daily["sum_true"],
-        name="Погоджено (TRUE)",
-        marker_color=KPO_GREEN,
-        text=true_inside,
-        textposition="inside",
-        insidetextanchor="middle",
-        textfont=dict(size=11, color="white"),
-        hovertemplate="Погоджено: %{y:.0f}<extra></extra>",
-        cliponaxis=False,
-    ))
-
-    # Підпис над стовпчиком — тотал + % дня за місяць
-    total_labels = []
-    for _, r in daily.iterrows():
-        if pd.notna(r["pct_of_month"]):
-            total_labels.append(f"{r['value']:.0f}<br>{r['pct_of_month']:.1f}%")
-        else:
-            total_labels.append(f"{r['value']:.0f}")
-
-    fig_overview.add_trace(go.Scatter(
-        x=daily["date"],
-        y=daily["value"],
-        mode="text",
-        text=total_labels,
-        textposition="top center",
-        textfont=dict(size=10, color=KPO_TEXT),
-        showlegend=False,
-        hoverinfo="skip",
-    ))
-
-    # Зовнішні анотації для маленьких сегментів — щоб цифри були читабельними
-    small_annotations = []
-    for _, r in daily.iterrows():
-        if 0 < r["sum_false"] < label_threshold:
-            small_annotations.append(dict(
-                x=r["date"],
-                y=r["sum_false"] / 2,
-                text=f"{r['sum_false']:.0f}",
-                showarrow=False,
-                xshift=-16, xanchor="right",
-                font=dict(size=10, color=KPO_RED),
-                bgcolor=KPO_BG,
-                bordercolor=KPO_RED, borderwidth=1, borderpad=2,
-            ))
-        if 0 < r["sum_true"] < label_threshold:
-            small_annotations.append(dict(
-                x=r["date"],
-                y=r["sum_false"] + r["sum_true"] / 2,
-                text=f"{r['sum_true']:.0f}",
-                showarrow=False,
-                xshift=16, xanchor="left",
-                font=dict(size=10, color=KPO_GREEN),
-                bgcolor=KPO_BG,
-                bordercolor=KPO_GREEN, borderwidth=1, borderpad=2,
-            ))
-
-    fig_overview.update_layout(
-        barmode="stack",
-        height=420,
-        margin=dict(l=10, r=10, t=30, b=10),
-        bargap=0.35,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hovermode="x unified",
-        annotations=small_annotations,
-    )
-    fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
-    fig_overview.update_yaxes(title_text="Кількість", range=[0, y_max])
+    fig_overview.update_layout(height=420, hovermode="x unified", margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_overview, use_container_width=True)
 
 # ============================================================
@@ -1601,10 +1572,7 @@ with tab2:
             labels={"date": "Дата", "value": "Кількість"},
             title="Щоденна динаміка",
         )
-        fig_daily_detailed.update_traces(
-            textposition="top center", textfont=dict(size=10, color=KPO_TEXT),
-            cliponaxis=False,
-        )
+        _style_line_traces(fig_daily_detailed, font_size=10, font_color=KPO_TEXT, show_text=True)
         fig_daily_detailed.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
         if smooth_enabled:
@@ -1626,10 +1594,9 @@ with tab2:
             labels={"date": "Дата", "value": "Кількість", "operation": "Операція"},
             title="Динаміка вибраних операцій",
         )
-        fig_daily_detailed.update_traces(
-            textposition="top center", textfont=dict(size=9),
-            cliponaxis=False,
-        )
+        # Те саме, що й у TAB 1: підписи вимикаємо, щоб не плодити шум і
+        # не падати на scattergl.
+        _style_line_traces(fig_daily_detailed, font_size=9, show_text=False)
         fig_daily_detailed.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
     fig_daily_detailed.update_layout(height=400, hovermode="x unified", margin=dict(l=10, r=10, t=20, b=10))
@@ -2343,8 +2310,14 @@ with tab5:
 # Футер з build info
 # ============================================================
 _commit_part = f" • commit {APP_COMMIT_HASH}" if APP_COMMIT_HASH else ""
+
+# Пріоритет — ручна нотатка. Якщо вона порожня, показуємо subject останнього коміту.
+_update_note = (LAST_UPDATE_NOTE or "").strip() or (APP_COMMIT_SUBJECT or "").strip()
+
 st.caption(
     f"Джерело: Google Sheets • Оновлення даних: до 5 хвилин після зміни таблиці "
     f"• Час: Europe/Kyiv. "
     f"• build #{APP_BUILD_NUMBER} від {APP_BUILD_DATE} {APP_BUILD_TIME}{_commit_part}"
 )
+if _update_note:
+    st.caption(f"🆕 Що нового в цьому оновленні: {_update_note}")
