@@ -1514,46 +1514,138 @@ with tab1:
 
     st.divider()
 
-    # --- Динаміка за період ---
+    # --- Динаміка за період (стовпчаста діаграма з накопиченням) ---
     st.subheader("📈 Динаміка за період")
+
+    # Агрегуємо по днях: total + окремо TRUE і FALSE
+    daily = filtered.groupby("date", as_index=False).agg(
+        value=("value", "sum"),
+        sum_true=("sum_true", "sum"),
+        sum_false=("sum_false", "sum"),
+    )
+    daily = daily.sort_values("date").reset_index(drop=True)
+
+    # Lookup місячних тоталів — для % дня за місяць (знаменник = повний місяць
+    # по вибраних операціях, а не лише по видимих днях)
     if operation_mode == "Тотал":
-        daily = filtered.groupby("date")["value"].sum().reset_index()
-        daily["operation"] = "Тотал"
-        daily = _add_pct_of_month(daily, _monthly_lookup_full)
-
-        fig_overview = px.line(
-            daily, x="date", y="value", markers=True,
-            text="label",
-            labels={"date": "Дата", "value": "Кількість"},
-            color_discrete_sequence=[KPO_CYAN],
+        monthly_lookup_agg = (
+            df[df["operation"] == "Тотал"]
+            .assign(month_key=lambda d: d["date"].dt.strftime("%Y-%m"))
+            .groupby("month_key")["value"].sum()
+            .to_dict()
         )
-        _style_line_traces(fig_overview, font_size=10, font_color=KPO_TEXT, show_text=True)
-        fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
-
-        if smooth_enabled:
-            daily["value_smooth"] = daily["value"].rolling(window=smooth_window, min_periods=1, center=True).mean()
-            fig_overview.add_scatter(x=daily["date"], y=daily["value_smooth"], mode="lines", name=f"Ковзне середнє ({smooth_window} дн.)", line=dict(color=KPO_AMBER, width=3))
-
-        anomalies = detect_anomalies(filtered, window=14, threshold=3.0)
-        if not anomalies.empty:
-            anomaly_points = anomalies[anomalies["is_anomaly"]]
-            if not anomaly_points.empty:
-                fig_overview.add_scatter(x=anomaly_points["date"], y=anomaly_points["value"], mode="markers", marker=dict(color=KPO_RED, size=10, symbol="x"), name="Аномалія")
     else:
-        plot_df = _add_pct_of_month(filtered, _monthly_lookup_full)
-
-        fig_overview = px.line(
-            plot_df, x="date", y="value",
-            color="operation", markers=True,
-            text="label",
-            labels={"date": "Дата", "value": "Кількість", "operation": "Операція"},
+        monthly_lookup_agg = (
+            df[df["operation"].isin(selected_operations)]
+            .assign(month_key=lambda d: d["date"].dt.strftime("%Y-%m"))
+            .groupby("month_key")["value"].sum()
+            .to_dict()
         )
-        # У режимі «Вибрані операції» точок зазвичай багато (усі місяці × операції),
-        # тому мітки прибираємо — вони все одно нечитабельні і лише створюють шум.
-        _style_line_traces(fig_overview, font_size=9, show_text=False)
-        fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
-    fig_overview.update_layout(height=420, hovermode="x unified", margin=dict(l=10, r=10, t=20, b=10))
+    daily["month_key"] = daily["date"].dt.strftime("%Y-%m")
+    daily["month_total"] = daily["month_key"].map(monthly_lookup_agg).fillna(0)
+    daily["pct_of_month"] = np.where(
+        daily["month_total"] > 0,
+        daily["value"] / daily["month_total"] * 100,
+        np.nan,
+    )
+
+    # ----- Поріг для підписів усередині сегментів -----
+    # Якщо сегмент нижчий за цей поріг, цифра всередині стає нечитабельною,
+    # тому для таких сегментів підпис виносимо за межі стовпчика (праворуч/ліворуч).
+    max_total = float(daily["value"].max()) if not daily.empty else 0
+    y_max = max_total * 1.18 if max_total > 0 else 10
+    label_threshold = max(2.0, max_total * 0.04)
+
+    false_inside = [f"{v:.0f}" if v >= label_threshold else "" for v in daily["sum_false"]]
+    true_inside = [f"{v:.0f}" if v >= label_threshold else "" for v in daily["sum_true"]]
+
+    fig_overview = go.Figure()
+
+    # Нижній шар — відмови (FALSE), підпис усередині
+    fig_overview.add_trace(go.Bar(
+        x=daily["date"],
+        y=daily["sum_false"],
+        name="Відхилено (FALSE)",
+        marker_color=KPO_RED,
+        text=false_inside,
+        textposition="inside",
+        insidetextanchor="middle",
+        textfont=dict(size=11, color="white"),
+        hovertemplate="Відхилено: %{y:.0f}<extra></extra>",
+        cliponaxis=False,
+    ))
+
+    # Верхній шар — погодження (TRUE), підпис усередині
+    fig_overview.add_trace(go.Bar(
+        x=daily["date"],
+        y=daily["sum_true"],
+        name="Погоджено (TRUE)",
+        marker_color=KPO_GREEN,
+        text=true_inside,
+        textposition="inside",
+        insidetextanchor="middle",
+        textfont=dict(size=11, color="white"),
+        hovertemplate="Погоджено: %{y:.0f}<extra></extra>",
+        cliponaxis=False,
+    ))
+
+    # Підпис над стовпчиком — тотал + % дня за місяць
+    total_labels = []
+    for _, r in daily.iterrows():
+        if pd.notna(r["pct_of_month"]):
+            total_labels.append(f"{r['value']:.0f}<br>{r['pct_of_month']:.1f}%")
+        else:
+            total_labels.append(f"{r['value']:.0f}")
+
+    fig_overview.add_trace(go.Scatter(
+        x=daily["date"],
+        y=daily["value"],
+        mode="text",
+        text=total_labels,
+        textposition="top center",
+        textfont=dict(size=10, color=KPO_TEXT),
+        showlegend=False,
+        hoverinfo="skip",
+    ))
+
+    # Зовнішні анотації для маленьких сегментів — щоб цифри були читабельними
+    small_annotations = []
+    for _, r in daily.iterrows():
+        if 0 < r["sum_false"] < label_threshold:
+            small_annotations.append(dict(
+                x=r["date"],
+                y=r["sum_false"] / 2,
+                text=f"{r['sum_false']:.0f}",
+                showarrow=False,
+                xshift=-16, xanchor="right",
+                font=dict(size=10, color=KPO_RED),
+                bgcolor=KPO_BG,
+                bordercolor=KPO_RED, borderwidth=1, borderpad=2,
+            ))
+        if 0 < r["sum_true"] < label_threshold:
+            small_annotations.append(dict(
+                x=r["date"],
+                y=r["sum_false"] + r["sum_true"] / 2,
+                text=f"{r['sum_true']:.0f}",
+                showarrow=False,
+                xshift=16, xanchor="left",
+                font=dict(size=10, color=KPO_GREEN),
+                bgcolor=KPO_BG,
+                bordercolor=KPO_GREEN, borderwidth=1, borderpad=2,
+            ))
+
+    fig_overview.update_layout(
+        barmode="stack",
+        height=420,
+        margin=dict(l=10, r=10, t=30, b=10),
+        bargap=0.35,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="x unified",
+        annotations=small_annotations,
+    )
+    fig_overview.update_xaxes(tickformat="%d.%m", title_text="Дата")
+    fig_overview.update_yaxes(title_text="Кількість", range=[0, y_max])
     st.plotly_chart(fig_overview, use_container_width=True)
 
 # ============================================================
@@ -1572,6 +1664,7 @@ with tab2:
             labels={"date": "Дата", "value": "Кількість"},
             title="Щоденна динаміка",
         )
+        # Безпечна стилізація — лише svg-трейси
         _style_line_traces(fig_daily_detailed, font_size=10, font_color=KPO_TEXT, show_text=True)
         fig_daily_detailed.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
@@ -1594,9 +1687,13 @@ with tab2:
             labels={"date": "Дата", "value": "Кількість", "operation": "Операція"},
             title="Динаміка вибраних операцій",
         )
-        # Те саме, що й у TAB 1: підписи вимикаємо, щоб не плодити шум і
-        # не падати на scattergl.
-        _style_line_traces(fig_daily_detailed, font_size=9, show_text=False)
+        # ВАЖЛИВО: у режимі «Вибрані операції» при виборі всіх місяців року
+        # Plotly Express може створити трейси типу scattergl (WebGL), для яких
+        # textposition/textfont не підтримуються. Тому показуємо підписи лише
+        # для svg-трейсів (передаємо show_text=True, але хелпер сам вирішить,
+        # до яких трейсів застосовувати стилізацію). Якщо треба прибрати
+        # підписи зовсім — поставте show_text=False.
+        _style_line_traces(fig_daily_detailed, font_size=9, show_text=True)
         fig_daily_detailed.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
     fig_daily_detailed.update_layout(height=400, hovermode="x unified", margin=dict(l=10, r=10, t=20, b=10))
