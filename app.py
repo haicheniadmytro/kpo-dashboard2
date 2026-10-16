@@ -34,7 +34,6 @@ def _get_build_info():
     app_dir = os.path.dirname(os.path.abspath(__file__))
     app_file = os.path.abspath(__file__)
 
-    # 1. Дата й час — з mtime файлу
     try:
         dt = datetime.fromtimestamp(os.path.getmtime(app_file))
         build_date = dt.strftime("%Y-%m-%d")
@@ -43,7 +42,6 @@ def _get_build_info():
         build_date = "—"
         build_time = "—"
 
-    # 2. Номер версії — з git (кількість комітів)
     build_number = "?"
     commit_hash = None
     commit_subject = None
@@ -86,12 +84,9 @@ def _get_build_info():
 # ============================================================
 # 0b. Опис останнього оновлення (для футера)
 # ============================================================
-# Оновлюйте цей рядок при кожному помітному деплої.
-# Показується у футері дашборда поруч із build-інфо.
-# Якщо залишити порожнім — у футері буде subject останнього git-коміту.
 LAST_UPDATE_NOTE = (
-    "Виправлено падіння графіка динаміки в режимі «Вибрані операції» "
-    "при виборі всіх місяців року (scattergl / Plotly)."
+    "На графіку «Динаміка за період» (Overview) під кількістю погоджень "
+    "і відмов додано їх відсоткову частку від денного тоталу."
 )
 
 # ============================================================
@@ -191,10 +186,8 @@ def now_kyiv_exact() -> pd.Timestamp:
 # 6. Парсинг комірок
 # ============================================================
 
-# Заголовок дня: 01.09, 1.9, 01/09, 01.09.2026
 DAY_HEADER_RE = re.compile(r"^\s*(\d{1,2})\s*[./\-]\s*(\d{1,2})\s*(?:[./\-]\s*\d{2,4})?\s*$")
 
-# Символи, які Google Sheets любить підсовувати замість звичайних
 _CHAR_FIXES = {
     "\xa0": " ", "\u202f": " ", "\u2007": " ",
     "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-",
@@ -224,7 +217,6 @@ def as_number(value):
     for bad, good in _CHAR_FIXES.items():
         val_str = val_str.replace(bad, good)
     val_str = val_str.replace(" ", "").replace("'", "")
-    # шукаємо число будь-де в рядку, не тільки на початку: "+4", "~4", "4шт"
     match = re.search(r"-?\d+(?:[.,]\d+)?", val_str)
     if not match:
         logger.warning(f"Не вдалося розпізнати число в '{val_str}'")
@@ -251,7 +243,6 @@ def parse_month_header(value, sheet_year):
     return MONTHS[match.group(1)], year
 
 def _find_month_blocks(values, sheet_year):
-    """Повертає [(header_row, month, year, block_end), ...] — межі кожного місячного блоку."""
     blocks = []
     for idx, row in enumerate(values):
         parsed = parse_month_header(row[0] if row else "", sheet_year)
@@ -262,16 +253,6 @@ def _find_month_blocks(values, sheet_year):
     return [tuple(b) for b in blocks]
 
 def _find_total_row(values, start, end):
-    """
-    Шукає рядок з написом «Тотал» — тобто рядок підсумків, де далі йдуть
-    операції в тому самому стовпці.
-
-    «Тотал» може з'являтись двічі в одному блоці: як заголовок пари колонок
-    TRUE/FALSE в шапці таблиці (не в колонці A) і як справжній підсумковий
-    рядок (завжди в колонці A, там само, де потім ідуть назви операцій).
-    Тому спершу шукаємо строго в колонці A, і лише якщо там нічого немає —
-    розширюємо пошук на сусідні колонки (для іншої розкладки таблиці).
-    """
     for r in range(start, end):
         row = values[r]
         if row and normalize_operation(row[0]).lower() == "тотал":
@@ -284,10 +265,6 @@ def _find_total_row(values, start, end):
     return None, None
 
 def _detect_day_columns(values, start, end, month):
-    """
-    Знаходить рядок із заголовками днів (01.09, 02.09, ...) і повертає
-    (header_row, [(col, day), ...]) для того рядка, де таких заголовків найбільше.
-    """
     best = None
     for r in range(start, min(start + 8, end)):
         found = []
@@ -303,17 +280,9 @@ def _detect_day_columns(values, start, end, month):
     return best if best else (None, [])
 
 def _looks_like_operation_label(label):
-    """
-    Справжня назва операції містить хоча б одну літеру (укр. чи лат.).
-    Рядок із самих цифр — це майже напевно чужа таблиця, а не операція.
-    """
     return bool(re.search(r"[A-Za-zА-Яа-яІіЇїЄєҐґ]", label))
 
 def _build_day_spans(day_cols):
-    """
-    Перетворює [(col, day)] у [(day, col, span)], де span — скільки колонок
-    займає день (1 = просто кількість, 2 = пара TRUE/FALSE).
-    """
     if not day_cols:
         return []
     gaps = [day_cols[i + 1][0] - day_cols[i][0] for i in range(len(day_cols) - 1)]
@@ -330,17 +299,6 @@ def _build_day_spans(day_cols):
     return spans
 
 def _discover_year_sheets(spreadsheet):
-    """
-    Замість того, щоб вгадувати назви аркушів за діапазоном років
-    (наприклад «від 2024 до поточного»), бере фактичний список аркушів
-    з таблиці і залишає лише ті, чия назва — двоцифровий рік («24», «25», «26»).
-    Нові роки підхоплюються самі, старі не губляться, а якщо назва аркуша
-    не відповідає формату — про це можна дізнатись явно, а не мовчки.
-
-    Повертає самі об'єкти Worksheet (а не лише назви), щоб виклик не робив
-    повторний запит до API на кожен аркуш — spreadsheet.worksheets() вже
-    один раз забрав усі метадані.
-    """
     all_worksheets = spreadsheet.worksheets()
     year_ws = {}
     for ws in all_worksheets:
@@ -370,9 +328,9 @@ def load_data():
 
     records = []
     warnings = []
-    unknown_ops = {}          # назва -> список місяців, де зустрілась
-    sheet_month_totals = {}   # month_key -> (true, false) з рядка «Тотал»
-    debug_info = []           # діагностика: що саме код визначив як «Тотал» для кожного блоку
+    unknown_ops = {}
+    sheet_month_totals = {}
+    debug_info = []
 
     sheet_names, worksheets, all_titles = _discover_year_sheets(spreadsheet)
     if not sheet_names:
@@ -397,7 +355,6 @@ def load_data():
 
         sheet_year = 2000 + int(sheet_name)
 
-        # --- Крок 1: зібрати всіх кандидатів на блок місяця ---
         candidates_by_month = {}
         for header_row, month, year, block_end in _find_month_blocks(values, sheet_year):
             month_key = f"{year}-{month:02d}"
@@ -432,7 +389,6 @@ def load_data():
                 (score, header_row, month, year, block_end, total_row_idx, label_col, day_cols)
             )
 
-        # --- Крок 2: для кожного місяця залишити лише найповніший блок ---
         chosen_blocks = []
         for month_key, candidates in candidates_by_month.items():
             candidates.sort(key=lambda c: c[0], reverse=True)
@@ -453,7 +409,6 @@ def load_data():
                 )
             chosen_blocks.append(best[1:])
 
-        # --- Крок 3: читання обраних блоків ---
         for header_row, month, year, block_end, total_row_idx, label_col, day_cols in chosen_blocks:
             month_key = f"{year}-{month:02d}"
             month_label = f"{month:02d}.{year}"
@@ -690,13 +645,6 @@ def gaussian_kde_np(data, x_grid, bandwidth=None):
     return density
 
 def analyze_density(group_names, dev_data):
-    """
-    Описова статистика для груп відхилень від середнього.
-
-    KDE використовується лише як візуальний орієнтир. При малих n
-    форма KDE, кількість піків та їх положення не трактуються як
-    надійний статистичний висновок.
-    """
     stats = {}
 
     for name, data in zip(group_names, dev_data):
@@ -715,7 +663,6 @@ def analyze_density(group_names, dev_data):
         p25, p75 = np.percentile(data, [25, 75])
         iqr = float(p75 - p25)
 
-        # Skewness при дуже малих вибірках не інтерпретуємо.
         if n >= 3:
             try:
                 skew_val = float(pd.Series(data).skew())
@@ -726,8 +673,6 @@ def analyze_density(group_names, dev_data):
         else:
             skew_val = None
 
-        # Центр найбільш заповненого інтервалу.
-        # Це опис поточної вибірки, а не "найімовірніше значення".
         bins = max(2, min(12, n))
         hist, edges = np.histogram(data, bins=bins)
         peak_idx = int(np.argmax(hist))
@@ -735,7 +680,6 @@ def analyze_density(group_names, dev_data):
         peak_count = int(hist[peak_idx])
         peak_height_pct = float(peak_count / n * 100)
 
-        # Якісну оцінку ширини кривої при n < 5 не робимо.
         if n < 5:
             width_key = "insufficient"
             width_txt = (
@@ -900,19 +844,12 @@ def _style_line_traces(fig, font_size=10, font_color=None, show_text=True):
     """
     Безпечно застосовує textposition / textfont / cliponaxis лише до
     звичайних svg-трейсів (type='scatter').
-
     Plotly Express для великих наборів даних може автоматично створювати
-    трейси типу 'scattergl' (WebGL), і в деяких версіях Plotly ці
-    властивості для них не підтримуються — масовий update_traces(...)
-    тоді падає з ValueError у basedatatypes._perform_update.
-
-    Другий аргумент show_text=False повністю прибирає підписи
-    (корисно, коли точок занадто багато і мітки все одно нечитабельні).
+    трейси типу 'scattergl' (WebGL), для яких ці властивості не
+    підтримуються — масовий update_traces(...) тоді падає з ValueError.
     """
     for trace in fig.data:
         if getattr(trace, "type", None) != "scatter":
-            # scattergl та інші типи пропускаємо, щоб не втратити
-            # продуктивність WebGL і не зламати валідацію Plotly.
             continue
         try:
             if show_text:
@@ -1191,12 +1128,6 @@ comparison_text = "  ".join(comparison_parts) if comparison_parts else "—"
 # 12b. Частка дня у календарному місяці (для підписів на графіках)
 # ============================================================
 def _add_pct_of_month(frame, monthly_lookup, value_col="value"):
-    """
-    Додає до frame колонки pct_of_month та label.
-    Знаменник — сума value за той самий календарний місяць, що й дата точки,
-    окремо для кожної операції (щоб працювало і в режимі «Вибрані операції»).
-    Працює і для одного місяця, і для діапазону через кілька місяців.
-    """
     frame = frame.copy()
     frame["month_key"] = frame["date"].dt.strftime("%Y-%m")
     frame["month_total"] = [
@@ -1213,8 +1144,6 @@ def _add_pct_of_month(frame, monthly_lookup, value_col="value"):
     )
     return frame
 
-# Lookup: (month_key, operation) -> сума value за цей місяць по цій операції.
-# Беремо з ПОВНОГО df (не з filtered), щоб знаменник був повним місячним тоталом.
 _monthly_lookup_full = (
     df.assign(month_key=lambda d: d["date"].dt.strftime("%Y-%m"))
     .groupby(["month_key", "operation"])["value"].sum()
@@ -1517,7 +1446,6 @@ with tab1:
     # --- Динаміка за період (стовпчаста діаграма з накопиченням) ---
     st.subheader("📈 Динаміка за період")
 
-    # Агрегуємо по днях: total + окремо TRUE і FALSE
     daily = filtered.groupby("date", as_index=False).agg(
         value=("value", "sum"),
         sum_true=("sum_true", "sum"),
@@ -1525,8 +1453,6 @@ with tab1:
     )
     daily = daily.sort_values("date").reset_index(drop=True)
 
-    # Lookup місячних тоталів — для % дня за місяць (знаменник = повний місяць
-    # по вибраних операціях, а не лише по видимих днях)
     if operation_mode == "Тотал":
         monthly_lookup_agg = (
             df[df["operation"] == "Тотал"]
@@ -1550,19 +1476,47 @@ with tab1:
         np.nan,
     )
 
-    # ----- Поріг для підписів усередині сегментів -----
-    # Якщо сегмент нижчий за цей поріг, цифра всередині стає нечитабельною,
-    # тому для таких сегментів підпис виносимо за межі стовпчика (праворуч/ліворуч).
+    # --- Денні відсотки TRUE / FALSE від загальної кількості за цей день ---
+    # Саме те, що потрібно для підписів під числами в стовпчиках.
+    daily["pct_true_day"] = np.where(
+        daily["value"] > 0,
+        daily["sum_true"] / daily["value"] * 100,
+        np.nan,
+    )
+    daily["pct_false_day"] = np.where(
+        daily["value"] > 0,
+        daily["sum_false"] / daily["value"] * 100,
+        np.nan,
+    )
+
     max_total = float(daily["value"].max()) if not daily.empty else 0
     y_max = max_total * 1.18 if max_total > 0 else 10
     label_threshold = max(2.0, max_total * 0.04)
 
-    false_inside = [f"{v:.0f}" if v >= label_threshold else "" for v in daily["sum_false"]]
-    true_inside = [f"{v:.0f}" if v >= label_threshold else "" for v in daily["sum_true"]]
+    # --- Підписи всередині сегментів: кількість + денний % під нею ---
+    false_inside = []
+    for _, r in daily.iterrows():
+        if r["sum_false"] >= label_threshold:
+            if pd.notna(r["pct_false_day"]):
+                false_inside.append(f"{r['sum_false']:.0f}<br>{r['pct_false_day']:.0f}%")
+            else:
+                false_inside.append(f"{r['sum_false']:.0f}")
+        else:
+            false_inside.append("")
+
+    true_inside = []
+    for _, r in daily.iterrows():
+        if r["sum_true"] >= label_threshold:
+            if pd.notna(r["pct_true_day"]):
+                true_inside.append(f"{r['sum_true']:.0f}<br>{r['pct_true_day']:.0f}%")
+            else:
+                true_inside.append(f"{r['sum_true']:.0f}")
+        else:
+            true_inside.append("")
 
     fig_overview = go.Figure()
 
-    # Нижній шар — відмови (FALSE), підпис усередині
+    # Нижній шар — відмови (FALSE), підпис усередині: "N ⏎ X%"
     fig_overview.add_trace(go.Bar(
         x=daily["date"],
         y=daily["sum_false"],
@@ -1571,12 +1525,17 @@ with tab1:
         text=false_inside,
         textposition="inside",
         insidetextanchor="middle",
-        textfont=dict(size=11, color="white"),
-        hovertemplate="Відхилено: %{y:.0f}<extra></extra>",
+        textfont=dict(size=10, color="white"),
+        hovertemplate=(
+            "Відхилено: %{y:.0f}"
+            "<br>Частка: %{customdata:.0f}%"
+            "<extra></extra>"
+        ),
+        customdata=daily["pct_false_day"].fillna(0).values,
         cliponaxis=False,
     ))
 
-    # Верхній шар — погодження (TRUE), підпис усередині
+    # Верхній шар — погодження (TRUE), підпис усередині: "N ⏎ X%"
     fig_overview.add_trace(go.Bar(
         x=daily["date"],
         y=daily["sum_true"],
@@ -1585,8 +1544,13 @@ with tab1:
         text=true_inside,
         textposition="inside",
         insidetextanchor="middle",
-        textfont=dict(size=11, color="white"),
-        hovertemplate="Погоджено: %{y:.0f}<extra></extra>",
+        textfont=dict(size=10, color="white"),
+        hovertemplate=(
+            "Погоджено: %{y:.0f}"
+            "<br>Частка: %{customdata:.0f}%"
+            "<extra></extra>"
+        ),
+        customdata=daily["pct_true_day"].fillna(0).values,
         cliponaxis=False,
     ))
 
@@ -1609,27 +1573,34 @@ with tab1:
         hoverinfo="skip",
     ))
 
-    # Зовнішні анотації для маленьких сегментів — щоб цифри були читабельними
+    # Зовнішні анотації для МАЛЕНЬКИХ сегментів — щоб цифри були читабельними.
+    # Формат: "N (X%)" в одному рядку, щоб не займати зайву висоту.
     small_annotations = []
     for _, r in daily.iterrows():
         if 0 < r["sum_false"] < label_threshold:
+            txt = f"{r['sum_false']:.0f}"
+            if pd.notna(r["pct_false_day"]):
+                txt = f"{r['sum_false']:.0f} ({r['pct_false_day']:.0f}%)"
             small_annotations.append(dict(
                 x=r["date"],
                 y=r["sum_false"] / 2,
-                text=f"{r['sum_false']:.0f}",
+                text=txt,
                 showarrow=False,
-                xshift=-16, xanchor="right",
+                xshift=-18, xanchor="right",
                 font=dict(size=10, color=KPO_RED),
                 bgcolor=KPO_BG,
                 bordercolor=KPO_RED, borderwidth=1, borderpad=2,
             ))
         if 0 < r["sum_true"] < label_threshold:
+            txt = f"{r['sum_true']:.0f}"
+            if pd.notna(r["pct_true_day"]):
+                txt = f"{r['sum_true']:.0f} ({r['pct_true_day']:.0f}%)"
             small_annotations.append(dict(
                 x=r["date"],
                 y=r["sum_false"] + r["sum_true"] / 2,
-                text=f"{r['sum_true']:.0f}",
+                text=txt,
                 showarrow=False,
-                xshift=16, xanchor="left",
+                xshift=18, xanchor="left",
                 font=dict(size=10, color=KPO_GREEN),
                 bgcolor=KPO_BG,
                 bordercolor=KPO_GREEN, borderwidth=1, borderpad=2,
@@ -1664,7 +1635,6 @@ with tab2:
             labels={"date": "Дата", "value": "Кількість"},
             title="Щоденна динаміка",
         )
-        # Безпечна стилізація — лише svg-трейси
         _style_line_traces(fig_daily_detailed, font_size=10, font_color=KPO_TEXT, show_text=True)
         fig_daily_detailed.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
@@ -1687,12 +1657,6 @@ with tab2:
             labels={"date": "Дата", "value": "Кількість", "operation": "Операція"},
             title="Динаміка вибраних операцій",
         )
-        # ВАЖЛИВО: у режимі «Вибрані операції» при виборі всіх місяців року
-        # Plotly Express може створити трейси типу scattergl (WebGL), для яких
-        # textposition/textfont не підтримуються. Тому показуємо підписи лише
-        # для svg-трейсів (передаємо show_text=True, але хелпер сам вирішить,
-        # до яких трейсів застосовувати стилізацію). Якщо треба прибрати
-        # підписи зовсім — поставте show_text=False.
         _style_line_traces(fig_daily_detailed, font_size=9, show_text=True)
         fig_daily_detailed.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
@@ -2408,7 +2372,6 @@ with tab5:
 # ============================================================
 _commit_part = f" • commit {APP_COMMIT_HASH}" if APP_COMMIT_HASH else ""
 
-# Пріоритет — ручна нотатка. Якщо вона порожня, показуємо subject останнього коміту.
 _update_note = (LAST_UPDATE_NOTE or "").strip() or (APP_COMMIT_SUBJECT or "").strip()
 
 st.caption(
