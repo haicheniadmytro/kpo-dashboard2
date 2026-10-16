@@ -86,7 +86,7 @@ def _get_build_info():
 # ============================================================
 LAST_UPDATE_NOTE = (
     "На графіку «Динаміка за період» (Overview) під кількістю погоджень "
-    "і відмов додано їх відсоткову частку від денного тоталу."
+    "і відмов додано їх відсоткову частку; збільшено шрифт підписів."
 )
 
 # ============================================================
@@ -1476,8 +1476,7 @@ with tab1:
         np.nan,
     )
 
-    # --- Денні відсотки TRUE / FALSE від загальної кількості за цей день ---
-    # Саме те, що потрібно для підписів під числами в стовпчиках.
+    # Денні відсотки TRUE / FALSE від загальної кількості за цей день
     daily["pct_true_day"] = np.where(
         daily["value"] > 0,
         daily["sum_true"] / daily["value"] * 100,
@@ -1493,14 +1492,14 @@ with tab1:
     y_max = max_total * 1.18 if max_total > 0 else 10
     label_threshold = max(2.0, max_total * 0.04)
 
-    # --- Підписи всередині сегментів: кількість + денний % під нею ---
+    # Підписи всередині сегментів: жирна кількість + звичайний % під нею
     false_inside = []
     for _, r in daily.iterrows():
         if r["sum_false"] >= label_threshold:
             if pd.notna(r["pct_false_day"]):
-                false_inside.append(f"{r['sum_false']:.0f}<br>{r['pct_false_day']:.0f}%")
+                false_inside.append(f"<b>{r['sum_false']:.0f}</b><br>{r['pct_false_day']:.0f}%")
             else:
-                false_inside.append(f"{r['sum_false']:.0f}")
+                false_inside.append(f"<b>{r['sum_false']:.0f}</b>")
         else:
             false_inside.append("")
 
@@ -1508,15 +1507,15 @@ with tab1:
     for _, r in daily.iterrows():
         if r["sum_true"] >= label_threshold:
             if pd.notna(r["pct_true_day"]):
-                true_inside.append(f"{r['sum_true']:.0f}<br>{r['pct_true_day']:.0f}%")
+                true_inside.append(f"<b>{r['sum_true']:.0f}</b><br>{r['pct_true_day']:.0f}%")
             else:
-                true_inside.append(f"{r['sum_true']:.0f}")
+                true_inside.append(f"<b>{r['sum_true']:.0f}</b>")
         else:
             true_inside.append("")
 
     fig_overview = go.Figure()
 
-    # Нижній шар — відмови (FALSE), підпис усередині: "N ⏎ X%"
+    # Нижній шар — відмови (FALSE): жирна кількість + % під нею
     fig_overview.add_trace(go.Bar(
         x=daily["date"],
         y=daily["sum_false"],
@@ -1525,7 +1524,11 @@ with tab1:
         text=false_inside,
         textposition="inside",
         insidetextanchor="middle",
-        textfont=dict(size=10, color="white"),
+        textfont=dict(
+            size=14,
+            color="#ffffff",
+            family="Inter, sans-serif",
+        ),
         hovertemplate=(
             "Відхилено: %{y:.0f}"
             "<br>Частка: %{customdata:.0f}%"
@@ -1535,7 +1538,7 @@ with tab1:
         cliponaxis=False,
     ))
 
-    # Верхній шар — погодження (TRUE), підпис усередині: "N ⏎ X%"
+    # Верхній шар — погодження (TRUE): жирна кількість + % під нею
     fig_overview.add_trace(go.Bar(
         x=daily["date"],
         y=daily["sum_true"],
@@ -1544,7 +1547,11 @@ with tab1:
         text=true_inside,
         textposition="inside",
         insidetextanchor="middle",
-        textfont=dict(size=10, color="white"),
+        textfont=dict(
+            size=14,
+            color="#ffffff",
+            family="Inter, sans-serif",
+        ),
         hovertemplate=(
             "Погоджено: %{y:.0f}"
             "<br>Частка: %{customdata:.0f}%"
@@ -1568,13 +1575,16 @@ with tab1:
         mode="text",
         text=total_labels,
         textposition="top center",
-        textfont=dict(size=10, color=KPO_TEXT),
+        textfont=dict(
+            size=12,
+            color="#e6edf3",
+            family="Inter, sans-serif",
+        ),
         showlegend=False,
         hoverinfo="skip",
     ))
 
-    # Зовнішні анотації для МАЛЕНЬКИХ сегментів — щоб цифри були читабельними.
-    # Формат: "N (X%)" в одному рядку, щоб не займати зайву висоту.
+    # Зовнішні анотації для маленьких сегментів
     small_annotations = []
     for _, r in daily.iterrows():
         if 0 < r["sum_false"] < label_threshold:
@@ -1587,7 +1597,7 @@ with tab1:
                 text=txt,
                 showarrow=False,
                 xshift=-18, xanchor="right",
-                font=dict(size=10, color=KPO_RED),
+                font=dict(size=11, color=KPO_RED, family="Inter, sans-serif"),
                 bgcolor=KPO_BG,
                 bordercolor=KPO_RED, borderwidth=1, borderpad=2,
             ))
@@ -1601,7 +1611,7 @@ with tab1:
                 text=txt,
                 showarrow=False,
                 xshift=18, xanchor="left",
-                font=dict(size=10, color=KPO_GREEN),
+                font=dict(size=11, color=KPO_GREEN, family="Inter, sans-serif"),
                 bgcolor=KPO_BG,
                 bordercolor=KPO_GREEN, borderwidth=1, borderpad=2,
             ))
@@ -1635,7 +1645,7 @@ with tab2:
             labels={"date": "Дата", "value": "Кількість"},
             title="Щоденна динаміка",
         )
-        _style_line_traces(fig_daily_detailed, font_size=10, font_color=KPO_TEXT, show_text=True)
+        _style_line_traces(fig_daily_detailed, font_size=11, font_color=KPO_TEXT, show_text=True)
         fig_daily_detailed.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
         if smooth_enabled:
@@ -1657,7 +1667,7 @@ with tab2:
             labels={"date": "Дата", "value": "Кількість", "operation": "Операція"},
             title="Динаміка вибраних операцій",
         )
-        _style_line_traces(fig_daily_detailed, font_size=9, show_text=True)
+        _style_line_traces(fig_daily_detailed, font_size=10, show_text=True)
         fig_daily_detailed.update_xaxes(tickformat="%d.%m", title_text="Дата")
 
     fig_daily_detailed.update_layout(height=400, hovermode="x unified", margin=dict(l=10, r=10, t=20, b=10))
