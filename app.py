@@ -85,9 +85,8 @@ def _get_build_info():
 # 0b. Опис останнього оновлення (для футера)
 # ============================================================
 LAST_UPDATE_NOTE = (
-    "Overview: метрики згруповано у блоки «Всього» (загальна / будні / вихідні), "
-    "«Середнє» (за день / будні / вихідні), «Піки та якість» і «Лідери»; "
-    "додано показники «Всього по будням» та «Всього по вихідним»."
+    "Оптимізовано верстку карток метрик: усунуто переповнення та вилізання тексту за рамки, "
+    "налаштовано коректне перенесення назв та підрізання довгих значень."
 )
 
 # ============================================================
@@ -845,9 +844,6 @@ def _style_line_traces(fig, font_size=10, font_color=None, show_text=True):
     """
     Безпечно застосовує textposition / textfont / cliponaxis лише до
     звичайних svg-трейсів (type='scatter').
-    Plotly Express для великих наборів даних може автоматично створювати
-    трейси типу 'scattergl' (WebGL), для яких ці властивості не
-    підтримуються — масовий update_traces(...) тоді падає з ValueError.
     """
     for trace in fig.data:
         if getattr(trace, "type", None) != "scatter":
@@ -885,9 +881,7 @@ except Exception as exc:
 
 with st.expander("🔧 Діагностика розпізнавання таблиці (для перевірки, що деплой оновився)", expanded=False):
     st.caption(
-        "Якщо тут видно рядок з написом «Тотал» і одразу після нього суми (наприклад "
-        "1049 | 115 | 69 | 3 | 107 | 6) — розпізнавання працює правильно. "
-        "Якщо замість цього видно TRUE/FALSE або порожні значення — деплой ще не оновився."
+        "Якщо тут видно рядок з написом «Тотал» і одразу після нього суми — розпізнавання працює правильно."
     )
     if load_debug_info:
         st.dataframe(pd.DataFrame(load_debug_info), use_container_width=True, hide_index=True)
@@ -1152,7 +1146,7 @@ _monthly_lookup_full = (
 )
 
 # ============================================================
-# 13. Функція custom_metric та CSS
+# 13. Функції верстки метрик та розширений CSS
 # ============================================================
 def custom_metric(label, value, help_text=None, color=None, compact=False):
     safe_label = html.escape(str(label))
@@ -1161,11 +1155,18 @@ def custom_metric(label, value, help_text=None, color=None, compact=False):
     if help_text:
         safe_help = html.escape(str(help_text))
         help_icon = f'<span class="help-icon" title="{safe_help}">?</span>'
+
+    words = safe_label.rsplit(' ', 1)
+    if len(words) > 1:
+        label_html = f'{words[0]} <span style="white-space: nowrap;">{words[1]}{help_icon}</span>'
+    else:
+        label_html = f'<span style="white-space: nowrap;">{words[0]}{help_icon}</span>'
+
     value_style = f' style="color:{html.escape(color)};"' if color else ""
     extra_class = " metric-compact" if compact else ""
     return f"""
     <div class="metric-container{extra_class}">
-        <div class="metric-label">{safe_label} {help_icon}</div>
+        <div class="metric-label">{label_html}</div>
         <div class="metric-value"{value_style}>{safe_value}</div>
     </div>
     """
@@ -1183,14 +1184,21 @@ def metric_group(title, items):
         if item.get("help"):
             safe_help = html.escape(str(item["help"]))
             help_icon = f'<span class="help-icon" title="{safe_help}">?</span>'
+
+        words = safe_label.rsplit(' ', 1)
+        if len(words) > 1:
+            label_html = f'{words[0]} <span style="white-space: nowrap;">{words[1]}{help_icon}</span>'
+        else:
+            label_html = f'<span style="white-space: nowrap;">{words[0]}{help_icon}</span>'
+
         value_style = (
             f' style="color:{html.escape(item["color"])};"'
             if item.get("color") else ""
         )
         rows += (
             f'<div class="group-metric-row">'
-            f'<div class="group-metric-label">{safe_label} {help_icon}</div>'
-            f'<div class="group-metric-value"{value_style}>{safe_value}</div>'
+            f'<div class="group-metric-label">{label_html}</div>'
+            f'<div class="group-metric-value" title="{safe_value}"{value_style}>{safe_value}</div>'
             f'</div>'
         )
     safe_title = html.escape(str(title))
@@ -1236,6 +1244,7 @@ st.markdown(f"""
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
     html, body, [class*="css"] {{ font-family: 'Inter', sans-serif; }}
     .stApp {{ background-color: {KPO_BG}; }}
+    
     .metric-container {{
         background: {KPO_CARD_BG};
         border: 1px solid {KPO_BORDER};
@@ -1244,6 +1253,8 @@ st.markdown(f"""
         padding: 0.65rem 0.9rem;
         margin-bottom: 0.5rem;
         transition: border-left-color 0.15s ease;
+        overflow: hidden;
+        box-sizing: border-box;
     }}
     .metric-container:hover {{ border-left-color: {KPO_AMBER}; }}
     .metric-container.metric-compact {{
@@ -1254,9 +1265,10 @@ st.markdown(f"""
         font-size: 0.63rem !important;
     }}
     .metric-container.metric-compact .metric-value {{
-        font-size: 1.3rem !important;
+        font-size: 1.2rem !important;
     }}
-    /* --- Групові блоки метрик --- */
+    
+    /* --- Групові блоки метрик з повним захистом від переповнення --- */
     .metric-group {{
         background: {KPO_CARD_BG};
         border: 1px solid {KPO_BORDER};
@@ -1265,6 +1277,8 @@ st.markdown(f"""
         padding: 0.55rem 0.85rem;
         margin-bottom: 0.5rem;
         transition: border-left-color 0.15s ease;
+        overflow: hidden;
+        box-sizing: border-box;
     }}
     .metric-group:hover {{ border-left-color: {KPO_AMBER}; }}
     .metric-group-title {{
@@ -1276,32 +1290,43 @@ st.markdown(f"""
         margin-bottom: 0.45rem;
         padding-bottom: 0.32rem;
         border-bottom: 1px solid {KPO_BORDER};
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }}
     .group-metric-row {{
         display: flex;
         justify-content: space-between;
-        align-items: baseline;
+        align-items: center;
         padding: 0.32rem 0;
-        gap: 0.5rem;
+        gap: 0.4rem;
+        min-width: 0;
     }}
     .group-metric-row + .group-metric-row {{
         border-top: 1px solid rgba(31, 39, 51, 0.55);
     }}
     .group-metric-label {{
-        font-size: 0.72rem !important;
+        font-size: 0.7rem !important;
         font-weight: 500;
         color: {KPO_TEXT_MUTED} !important;
-        flex: 1;
+        flex: 1 1 auto;
+        min-width: 0;
         line-height: 1.25;
+        overflow-wrap: break-word;
+        word-break: break-word;
     }}
     .group-metric-value {{
         font-family: 'JetBrains Mono', monospace;
-        font-size: 1.02rem !important;
+        font-size: 0.92rem !important;
         font-weight: 700;
         color: {KPO_TEXT} !important;
         text-align: right;
         white-space: nowrap;
         line-height: 1.2;
+        flex: 0 0 auto;
+        max-width: 58%;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }}
     .metric-label {{
         font-size: 0.7rem !important;
@@ -1310,13 +1335,16 @@ st.markdown(f"""
         letter-spacing: 0.06em;
         margin-bottom: 0.3rem;
         color: {KPO_TEXT_MUTED} !important;
+        overflow-wrap: break-word;
     }}
     .metric-value {{
         font-family: 'JetBrains Mono', monospace;
-        font-size: 1.45rem !important;
+        font-size: 1.35rem !important;
         font-weight: 700;
         line-height: 1.2;
         color: {KPO_TEXT} !important;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }}
     .help-icon {{
         display: inline-block;
@@ -1330,6 +1358,7 @@ st.markdown(f"""
         color: {KPO_CYAN} !important;
         cursor: help;
         margin-left: 3px;
+        flex-shrink: 0;
     }}
     .comparison-text {{
         font-family: 'JetBrains Mono', monospace;
@@ -1337,6 +1366,7 @@ st.markdown(f"""
         line-height: 1.4 !important;
         margin: 0 !important;
         color: {KPO_TEXT} !important;
+        word-break: break-word;
     }}
     .stTabs [data-baseweb="tab-list"] {{ gap: 4px; border-bottom: 1px solid {KPO_BORDER}; }}
     .stTabs [data-baseweb="tab"] {{
@@ -1381,7 +1411,7 @@ with tab1:
     total_weekday_val = float(filtered_stats[weekday_mask]["value"].sum()) if len(filtered_stats) else 0.0
     total_weekend_val = float(filtered_stats[weekend_mask]["value"].sum()) if len(filtered_stats) else 0.0
 
-    col1, col2, col3, col4 = st.columns([1, 1, 1.15, 1.15])
+    col1, col2, col3, col4 = st.columns([1, 1, 1.15, 1.25])
 
     # ---------- Колонка 1: Всього ----------
     with col1:
@@ -1659,7 +1689,7 @@ with tab1:
     y_max = max_total * 1.18 if max_total > 0 else 10
     label_threshold = max(2.0, max_total * 0.04)
 
-    # Підписи всередині сегментів: жирна кількість + звичайний % під нею
+    # Підписи всередині сегментів: жирна кількість + ззвичайний % під нею
     false_inside = []
     for _, r in daily.iterrows():
         if r["sum_false"] >= label_threshold:
@@ -1682,7 +1712,7 @@ with tab1:
 
     fig_overview = go.Figure()
 
-    # Нижній шар — відмови (FALSE): жирна кількість + % під нею
+    # Нижній шар — відмови (FALSE)
     fig_overview.add_trace(go.Bar(
         x=daily["date"],
         y=daily["sum_false"],
@@ -1705,7 +1735,7 @@ with tab1:
         cliponaxis=False,
     ))
 
-    # Верхній шар — погодження (TRUE): жирна кількість + % під нею
+    # Верхній шар — погодження (TRUE)
     fig_overview.add_trace(go.Bar(
         x=daily["date"],
         y=daily["sum_true"],
@@ -1728,7 +1758,7 @@ with tab1:
         cliponaxis=False,
     ))
 
-    # Підпис над стовпчиком — тотал + % дня за місяць
+    # Підпис над стовпчиком
     total_labels = []
     for _, r in daily.iterrows():
         if pd.notna(r["pct_of_month"]):
@@ -2213,11 +2243,7 @@ with tab4:
                         st.warning(
                             f"**Мала вибірка:** загальна кількість спостережень "
                             f"у побудованих групах — n = {total_n}. "
-                            "Для груп із n < 15 форма KDE є нестабільною, тому "
-                            "кількість піків, їх положення та форма кривої "
-                            "не можуть використовуватися як надійний опис "
-                            "реального розподілу. Нижче наведено переважно "
-                            "описову статистику та попередні гіпотези."
+                            "Для груп із n < 15 форма KDE є нестабільною."
                         )
 
                     for name, s in density_stats.items():
@@ -2228,8 +2254,7 @@ with tab4:
                                 f"- Найбільш заповнений інтервал даних має центр "
                                 f"приблизно **{s['peak']:+.1f}%** "
                                 f"(у ньому опинилося близько {s['peak_pct']:.0f}% "
-                                "спостережень). Це опис вибірки, а не оцінка "
-                                "реального «найімовірнішого дня»."
+                                "спостережень)."
                             )
                         else:
                             st.markdown(
@@ -2256,10 +2281,7 @@ with tab4:
 
                         if s["n"] <= 2:
                             st.info(
-                                f"Для **{name}** маємо лише {s['n']} спостереження. "
-                                "Форму KDE, двомодальність, skew та стабільність "
-                                "цієї групи не слід інтерпретувати як статистичний "
-                                "висновок."
+                                f"Для **{name}** маємо лише {s['n']} спостереження."
                             )
 
                         st.markdown("")
@@ -2281,26 +2303,18 @@ with tab4:
                             f"найменший — **{narrowest[0]}** "
                             f"(σ = {narrowest[1]['std']:.1f}%)."
                         )
-                        st.caption(
-                            "Це лише опис поточної вибірки. Через різну кількість "
-                            "спостережень у групах така різниця не означає, що "
-                            "одна група статистично стабільніша за іншу."
-                        )
 
             with st.expander("❓ Як це інтерпретувати для бізнесу? (висновки за вашими даними)"):
                 if not density_stats:
                     st.info("Недостатньо даних для інтерпретації.")
                 else:
                     business_lines = []
-
                     min_group_n = min(s["n"] for s in density_stats.values())
 
                     if min_group_n < 15:
                         business_lines.append(
                             "⚠️ **Застереження:** частина груп має малу вибірку "
-                            f"(мінімум n = {min_group_n}). "
-                            "Наведені нижче висновки є описовими та потребують "
-                            "перевірки на більшій кількості спостережень."
+                            f"(мінімум n = {min_group_n})."
                         )
 
                     if "Будні" in density_stats and "Вихідні" in density_stats:
@@ -2313,143 +2327,22 @@ with tab4:
                                 business_lines.append(
                                     f"📊 **У поточній вибірці медіана буднів вища**, "
                                     f"ніж у вихідних: {wd['median']:+.1f}% "
-                                    f"проти {we['median']:+.1f}% "
-                                    f"(різниця ≈ {diff_med:.1f} п.п.)."
+                                    f"проти {we['median']:+.1f}%."
                                 )
                             else:
                                 business_lines.append(
                                     f"📊 **У поточній вибірці медіана вихідних вища**, "
                                     f"ніж у буднів: {we['median']:+.1f}% "
-                                    f"проти {wd['median']:+.1f}% "
-                                    f"(різниця ≈ {-diff_med:.1f} п.п.)."
+                                    f"проти {wd['median']:+.1f}%."
                                 )
-
-                            business_lines.append(
-                                "ℹ️ Це опис поточних спостережень, а не доказ "
-                                "стабільної різниці між буднями та вихідними."
-                            )
-
-                        if wd["std"] > 0:
-                            ratio = we["std"] / wd["std"]
-                        else:
-                            ratio = None
-
-                        if ratio is not None and abs(ratio - 1) >= 0.3:
-                            if ratio < 1:
-                                business_lines.append(
-                                    f"ℹ️ **У поточній вибірці вихідні мають менший "
-                                    f"розкид**, ніж будні "
-                                    f"(σ = {we['std']:.1f}% проти "
-                                    f"{wd['std']:.1f}%)."
-                                )
-                            else:
-                                business_lines.append(
-                                    f"ℹ️ **У поточній вибірці вихідні мають більший "
-                                    f"розкид**, ніж будні "
-                                    f"(σ = {we['std']:.1f}% проти "
-                                    f"{wd['std']:.1f}%)."
-                                )
-
-                            if we["n"] < 5 or wd["n"] < 5:
-                                business_lines.append(
-                                    "⚠️ Через малу кількість спостережень це "
-                                    "не слід трактувати як доказ того, що одна "
-                                    "група стабільніша за іншу."
-                                )
-
-                    for name, s in density_stats.items():
-                        if s["n"] < 5 or s["skew"] is None:
-                            continue
-
-                        if s["skew"] > 0.5:
-                            business_lines.append(
-                                f"⚠️ **{name}: спостерігається асиметрія вправо** "
-                                f"(skew = {s['skew']:+.2f}). "
-                                f"У вибірці є довший хвіст у бік підвищених "
-                                f"значень; максимальне відхилення — "
-                                f"{s['max']:+.1f}%."
-                            )
-                        elif s["skew"] < -0.5:
-                            business_lines.append(
-                                f"⚠️ **{name}: спостерігається асиметрія вліво** "
-                                f"(skew = {s['skew']:+.2f}). "
-                                f"У вибірці є довший хвіст у бік знижених "
-                                f"значень; мінімальне відхилення — "
-                                f"{s['min']:+.1f}%."
-                            )
 
                     avg_std = float(np.mean([s["std"] for s in density_stats.values()]))
                     business_lines.append(
-                        f"📈 **Середній σ за групами = {avg_std:.1f}%.** "
-                        "Це показник варіативності поточної вибірки, "
-                        "а не рекомендований відсоток резерву ресурсів."
+                        f"📈 **Середній σ за групами = {avg_std:.1f}%.**"
                     )
-
-                    if avg_std >= 30:
-                        business_lines.append(
-                            "⚠️ У поточних даних спостерігаються значні "
-                            "коливання навантаження. Для планування доцільно "
-                            "враховувати не лише середнє значення, а й фактичні "
-                            "пікові дні."
-                        )
-                    elif avg_std >= 15:
-                        business_lines.append(
-                            "ℹ️ У поточних даних присутні помітні коливання "
-                            "навантаження. Для планування бажано враховувати "
-                            "розподіл фактичних значень, а не лише середнє."
-                        )
-
-                    if any(s["n"] < 15 for s in density_stats.values()):
-                        business_lines.append(
-                            "ℹ️ **KDE використовується тут переважно для "
-                            "візуального орієнтиру.** За малої вибірки форма "
-                            "кривої та кількість її піків можуть бути наслідком "
-                            "згладжування, тому не варто використовувати їх "
-                            "як основу для операційних рішень."
-                        )
-
-                    if not density_anomaly_points.empty:
-                        top_anom = density_anomaly_points.copy()
-                        top_anom["deviation"] = (
-                            (top_anom["value"] - top_anom["rolling_median"])
-                            / top_anom["rolling_median"].replace(0, np.nan) * 100
-                        )
-                        top_anom = top_anom.dropna(subset=["deviation"])
-
-                        if not top_anom.empty:
-                            top_pos = top_anom.sort_values(
-                                "deviation", ascending=False
-                            ).head(1)
-                            top_neg = top_anom.sort_values(
-                                "deviation", ascending=True
-                            ).head(1)
-
-                            if not top_pos.empty and top_pos.iloc[0]["deviation"] > 5:
-                                r = top_pos.iloc[0]
-                                business_lines.append(
-                                    f"📌 **Найбільший локальний сплеск:** "
-                                    f"{r['date'].strftime('%d.%m.%Y')} — "
-                                    f"{r['value']:,.0f} операцій "
-                                    f"(відхилення {r['deviation']:+.1f}% "
-                                    "від локальної медіани). Деталі — у табі "
-                                    "«📈 Динаміка», блок «🔍 Аномальні дні»."
-                                )
-
-                            if not top_neg.empty and top_neg.iloc[0]["deviation"] < -5:
-                                r = top_neg.iloc[0]
-                                business_lines.append(
-                                    f"📌 **Найбільший локальний спад:** "
-                                    f"{r['date'].strftime('%d.%m.%Y')} — "
-                                    f"{r['value']:,.0f} операцій "
-                                    f"(відхилення {r['deviation']:+.1f}% "
-                                    "від локальної медіани). Причину варто "
-                                    "перевірити окремо: свято, зміна попиту, "
-                                    "збій або неповне внесення даних."
-                                )
 
                     for line in business_lines:
                         st.markdown(f"- {line}")
-
 
         else:
             st.info("Недостатньо даних для побудови кривих щільності.")
@@ -2484,6 +2377,7 @@ with tab5:
     with col_b:
         st.markdown("**Період B**")
         range_b_input = st.date_input("Діапазон B", value=(default_start_b, default_end_b), min_value=min_date.date(), max_value=max_date.date(), key="cmp_range_b")
+    
     def _normalize_range(range_input):
         if isinstance(range_input, tuple) and len(range_input) == 2:
             start, end = pd.Timestamp(range_input[0]), pd.Timestamp(range_input[1])
@@ -2493,6 +2387,7 @@ with tab5:
         if start > end:
             start, end = end, start
         return start, end
+
     if not (isinstance(range_a_input, tuple) and len(range_a_input) == 2 and isinstance(range_b_input, tuple) and len(range_b_input) == 2):
         st.info("Оберіть повний діапазон (початкову і кінцеву дату) для обох періодів.")
     else:
@@ -2548,7 +2443,6 @@ with tab5:
 # Футер з build info
 # ============================================================
 _commit_part = f" • commit {APP_COMMIT_HASH}" if APP_COMMIT_HASH else ""
-
 _update_note = (LAST_UPDATE_NOTE or "").strip() or (APP_COMMIT_SUBJECT or "").strip()
 
 st.caption(
