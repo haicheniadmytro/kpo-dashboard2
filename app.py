@@ -85,6 +85,7 @@ def _get_build_info():
 # 0b. Історія останніх 10 змін (для згортального блоку)
 # ============================================================
 RECENT_CHANGES = [
+    "**v1.11** — Перегруповано Overview: виділено окремі блоки для Стабільності та Коефіцієнта погоджень (з деталізацією будні/вихідні), а також об'єднано Піки, Лідери та Порівняння в єдиний блок.",
     "**v1.10** — Додано окремий згортальний блок «Останні зміни» з детальною історією останніх 10 оновлень.",
     "**v1.9** — Оптимізовано верстку карток метрик: усунуто вилізання тексту за рамки та налаштовано перенесення назв.",
     "**v1.8** — Покращено верстку колонок в Overview та зафіксовано позицію підказок `?` біля тексту.",
@@ -94,7 +95,6 @@ RECENT_CHANGES = [
     "**v1.4** — Додано вкладку «Порівняння двох довільних періодів» з порівнянням метрик A/B.",
     "**v1.3** — Додано автоматичний аналіз кривих щільності (KDE) та бізнес-висновки щодо варіативності.",
     "**v1.2** — Реалізовано алгоритм виявлення аномальних днів за параметром Z-score (MAD).",
-    "**v1.1** — Додано теплові карти коефіцієнта погоджень та розподілу денного навантаження.",
 ]
 
 LAST_UPDATE_NOTE = RECENT_CHANGES[0]
@@ -1184,12 +1184,16 @@ def custom_metric(label, value, help_text=None, color=None, compact=False):
 def metric_group(title, items):
     """
     Груповий блок метрик: заголовок + набір рядків «підпис — значення».
-    items: list[dict] з ключами label, value, help (опц.), color (опц.)
+    items: list[dict] з ключами label, value, help (опц.), color (опц.), allow_html (опц.)
     """
     rows = ""
     for item in items:
         safe_label = html.escape(str(item["label"]))
-        safe_value = html.escape(str(item["value"]))
+        if item.get("allow_html"):
+            safe_value = str(item["value"])
+        else:
+            safe_value = html.escape(str(item["value"]))
+
         help_icon = ""
         if item.get("help"):
             safe_help = html.escape(str(item["help"]))
@@ -1208,7 +1212,7 @@ def metric_group(title, items):
         rows += (
             f'<div class="group-metric-row">'
             f'<div class="group-metric-label">{label_html}</div>'
-            f'<div class="group-metric-value" title="{safe_value}"{value_style}>{safe_value}</div>'
+            f'<div class="group-metric-value" title="{safe_value.replace("<br>", " ")}"{value_style}>{safe_value}</div>'
             f'</div>'
         )
     safe_title = html.escape(str(title))
@@ -1327,14 +1331,13 @@ st.markdown(f"""
     }}
     .group-metric-value {{
         font-family: 'JetBrains Mono', monospace;
-        font-size: 0.92rem !important;
+        font-size: 0.9rem !important;
         font-weight: 700;
         color: {KPO_TEXT} !important;
         text-align: right;
-        white-space: nowrap;
         line-height: 1.2;
         flex: 0 0 auto;
-        max-width: 58%;
+        max-width: 62%;
         overflow: hidden;
         text-overflow: ellipsis;
     }}
@@ -1421,7 +1424,34 @@ with tab1:
     total_weekday_val = float(filtered_stats[weekday_mask]["value"].sum()) if len(filtered_stats) else 0.0
     total_weekend_val = float(filtered_stats[weekend_mask]["value"].sum()) if len(filtered_stats) else 0.0
 
-    col1, col2, col3, col4 = st.columns([1, 1, 1.15, 1.25])
+    # Розрахунок стабільності у будні та вихідні
+    filtered_wd = filtered[filtered["is_weekend"] == False]
+    filtered_we = filtered[filtered["is_weekend"] == True]
+    if daily_avg_weekday and daily_avg_weekday > 0:
+        _, cv_wd, _ = calc_stability(filtered_wd, daily_avg_weekday)
+    else:
+        cv_wd = 0.0
+    if daily_avg_weekend and daily_avg_weekend > 0:
+        _, cv_we, _ = calc_stability(filtered_we, daily_avg_weekend)
+    else:
+        cv_we = 0.0
+
+    # Розрахунок коефіцієнта погоджень у будні та вихідні
+    wd_stats = filtered_stats[filtered_stats["is_weekend"] == False]
+    sum_true_wd = float(wd_stats["sum_true"].sum()) if not wd_stats.empty else 0.0
+    sum_false_wd = float(wd_stats["sum_false"].sum()) if not wd_stats.empty else 0.0
+    total_ratio_wd = sum_true_wd + sum_false_wd
+    approval_rate_wd = (sum_true_wd / total_ratio_wd * 100) if total_ratio_wd > 0 else 0
+    approval_rate_wd_str = f"{approval_rate_wd:.1f}%" if total_ratio_wd > 0 else "—"
+
+    we_stats = filtered_stats[filtered_stats["is_weekend"] == True]
+    sum_true_we = float(we_stats["sum_true"].sum()) if not we_stats.empty else 0.0
+    sum_false_we = float(we_stats["sum_false"].sum()) if not we_stats.empty else 0.0
+    total_ratio_we = sum_true_we + sum_false_we
+    approval_rate_we = (sum_true_we / total_ratio_we * 100) if total_ratio_we > 0 else 0
+    approval_rate_we_str = f"{approval_rate_we:.1f}%" if total_ratio_we > 0 else "—"
+
+    col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 1.3])
 
     # ---------- Колонка 1: Всього ----------
     with col1:
@@ -1475,97 +1505,107 @@ with tab1:
             },
         ]), unsafe_allow_html=True)
 
-    # ---------- Колонка 3: Піки та якість ----------
+    # ---------- Колонка 3: Стабільність ----------
     with col3:
-        peak_display = f"{peak:,.0f}" if peak > 0 else "—"
-        if peak_date is not None:
-            peak_display += f" ({peak_date.strftime('%d.%m')})"
-        st.markdown(metric_group("Піки та якість", [
+        st.markdown(metric_group("Стабільність (CV)", [
             {
-                "label": "Пік за день",
-                "value": peak_display,
-                "help": "Найбільша кількість операцій за один день "
-                        "(лише дні з внесеними даними). У дужках – дата піку.",
-            },
-            {
-                "label": "Пік / середнє",
-                "value": f"{peak_avg_ratio:.2f}×",
-                "help": "У скільки разів пік перевищує середнє",
-            },
-            {
-                "label": "Стабільність (CV)",
+                "label": "Загальна",
                 "value": f"{cv:.1f}%" if cv > 0 else "—",
                 "color": cv_color(cv if cv > 0 else None),
-                "help": "Коефіцієнт варіації (лише дні з внесеними даними). "
-                        "🟢 <15% 🟡 15-30% 🔴 >30%",
+                "help": "Коефіцієнт варіації за весь період (лише дні з даними). 🟢 <15% 🟡 15-30% 🔴 >30%",
             },
             {
-                "label": "Коефіцієнт погоджень",
+                "label": "Будні",
+                "value": f"{cv_wd:.1f}%" if cv_wd > 0 else "—",
+                "color": cv_color(cv_wd if cv_wd > 0 else None),
+                "help": "Коефіцієнт варіації у будні дні",
+            },
+            {
+                "label": "Вихідні",
+                "value": f"{cv_we:.1f}%" if cv_we > 0 else "—",
+                "color": cv_color(cv_we if cv_we > 0 else None),
+                "help": "Коефіцієнт варіації у вихідні дні",
+            },
+        ]), unsafe_allow_html=True)
+
+    # ---------- Колонка 4: Коефіцієнт погоджень ----------
+    with col4:
+        st.markdown(metric_group("Коефіцієнт погоджень", [
+            {
+                "label": "Загальний",
                 "value": approval_rate_str,
                 "color": approval_rate_color(approval_rate_val if approval_rate_available else None),
-                "help": f"Частка TRUE (погоджено) від TRUE+FALSE за вибраний період "
-                        f"і вибрані операції. "
+                "help": f"Частка TRUE (погоджено) від TRUE+FALSE за період. "
                         f"🟢 ≥{APPROVAL_GOOD_THRESHOLD}% "
                         f"🟡 {APPROVAL_WARN_THRESHOLD}-{APPROVAL_GOOD_THRESHOLD}% "
                         f"🔴 <{APPROVAL_WARN_THRESHOLD}%",
             },
+            {
+                "label": "Будні",
+                "value": approval_rate_wd_str,
+                "color": approval_rate_color(approval_rate_wd if total_ratio_wd > 0 else None),
+                "help": "Частка погоджень у будні дні",
+            },
+            {
+                "label": "Вихідні",
+                "value": approval_rate_we_str,
+                "color": approval_rate_color(approval_rate_we if total_ratio_we > 0 else None),
+                "help": "Частка погоджень у вихідні дні",
+            },
         ]), unsafe_allow_html=True)
 
-    # ---------- Колонка 4: Лідери + Порівняння ----------
-    with col4:
+    # ---------- Колонка 5: Піки, лідери та порівняння ----------
+    with col5:
+        peak_display = f"{peak:,.0f}" if peak > 0 else "—"
+        if peak_date is not None:
+            peak_display += f" ({peak_date.strftime('%d.%m')})"
+
         if busiest_weekday:
             day_ua = WEEKDAY_UA.get(busiest_weekday, busiest_weekday)
-            wd_val = f"{day_ua} — {busiest_weekday_val:.0f}/день"
+            wd_val = f"{day_ua} ({busiest_weekday_val:.0f}/д)"
             wd_help = "День тижня з найвищим середнім навантаженням (лише дні з внесеними даними)"
         else:
             wd_val = "—"
             wd_help = None
 
         if busiest_op:
-            display_name = busiest_op if len(busiest_op) <= 13 else busiest_op[:11] + "…"
-            op_val = f"{display_name} — {busiest_op_val:,.0f}"
+            display_name = busiest_op if len(busiest_op) <= 12 else busiest_op[:10] + "…"
+            op_val = f"{display_name} ({busiest_op_val:,.0f})"
             op_help = f"{busiest_op} — {busiest_op_val:,.0f} (повна назва)"
         else:
             op_val = "—"
             op_help = None
 
-        st.markdown(metric_group("Лідери", [
-            {"label": "Найактивніший день", "value": wd_val, "help": wd_help},
-            {"label": "Найактивніша операція", "value": op_val, "help": op_help},
-        ]), unsafe_allow_html=True)
+        comp_val = comparison_text.replace("  ", "<br>") if comparison_text != "—" else "—"
 
-        # Порівняння — окрема картка (мультирядкова)
-        if period_mode == "За місяцями" and len(selected_months) == 1 and operation_mode == "Тотал":
-            if comparison_text != "—":
-                parts = comparison_text.split("  ")
-                comp_html = "".join(
-                    f"<p class='comparison-text'>{html.escape(part)}</p>"
-                    for part in parts
-                )
-                st.markdown(f"""
-                <div class="metric-container metric-compact">
-                    <div class="metric-label">Порівняння</div>
-                    {comp_html}
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown(
-                    custom_metric(
-                        "Порівняння", "—",
-                        "Немає даних для порівняння з попереднім місяцем/роком",
-                        compact=True,
-                    ),
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.markdown(
-                custom_metric(
-                    "Порівняння", "—",
-                    "Доступно лише для одного місяця в режимі 'За місяцями' + 'Тотал'",
-                    compact=True,
-                ),
-                unsafe_allow_html=True,
-            )
+        st.markdown(metric_group("Піки, лідери й порівняння", [
+            {
+                "label": "Пік за день",
+                "value": peak_display,
+                "help": "Найбільша кількість операцій за один день (у дужках — дата)",
+            },
+            {
+                "label": "Пік / середнє",
+                "value": f"{peak_avg_ratio:.2f}×",
+                "help": "У скільки разів пік перевищує середньодобове значення",
+            },
+            {
+                "label": "Найактивніший день",
+                "value": wd_val,
+                "help": wd_help,
+            },
+            {
+                "label": "Найактивніша операція",
+                "value": op_val,
+                "help": op_help,
+            },
+            {
+                "label": "Порівняння",
+                "value": comp_val,
+                "help": "Зміна обсягу у порівнянні з попереднім місяцем та аналогічним місяцем минулого року",
+                "allow_html": True,
+            },
+        ]), unsafe_allow_html=True)
 
     st.divider()
     st.subheader("💡 Інсайти")
@@ -1699,7 +1739,7 @@ with tab1:
     y_max = max_total * 1.18 if max_total > 0 else 10
     label_threshold = max(2.0, max_total * 0.04)
 
-    # Підписи всередині сегментів: жирна кількість + звичайний % під нею
+    # Підписи всередині сегментів: жирна кількість + ззвичайний % під нею
     false_inside = []
     for _, r in daily.iterrows():
         if r["sum_false"] >= label_threshold:
