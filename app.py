@@ -85,8 +85,9 @@ def _get_build_info():
 # 0b. Опис останнього оновлення (для футера)
 # ============================================================
 LAST_UPDATE_NOTE = (
-    "На графіку «Динаміка за період» (Overview) під кількістю погоджень "
-    "і відмов додано їх відсоткову частку; збільшено шрифт підписів."
+    "Overview: метрики згруповано у блоки «Всього» (загальна / будні / вихідні), "
+    "«Середнє» (за день / будні / вихідні), «Піки та якість» і «Лідери»; "
+    "додано показники «Всього по будням» та «Всього по вихідним»."
 )
 
 # ============================================================
@@ -1169,6 +1170,36 @@ def custom_metric(label, value, help_text=None, color=None, compact=False):
     </div>
     """
 
+def metric_group(title, items):
+    """
+    Груповий блок метрик: заголовок + набір рядків «підпис — значення».
+    items: list[dict] з ключами label, value, help (опц.), color (опц.)
+    """
+    rows = ""
+    for item in items:
+        safe_label = html.escape(str(item["label"]))
+        safe_value = html.escape(str(item["value"]))
+        help_icon = ""
+        if item.get("help"):
+            safe_help = html.escape(str(item["help"]))
+            help_icon = f'<span class="help-icon" title="{safe_help}">?</span>'
+        value_style = (
+            f' style="color:{html.escape(item["color"])};"'
+            if item.get("color") else ""
+        )
+        rows += (
+            f'<div class="group-metric-row">'
+            f'<div class="group-metric-label">{safe_label} {help_icon}</div>'
+            f'<div class="group-metric-value"{value_style}>{safe_value}</div>'
+            f'</div>'
+        )
+    safe_title = html.escape(str(title))
+    return (
+        f'<div class="metric-group">'
+        f'<div class="metric-group-title">{safe_title}</div>'
+        f'{rows}</div>'
+    )
+
 def approval_rate_color(value):
     if value is None:
         return None
@@ -1224,6 +1255,53 @@ st.markdown(f"""
     }}
     .metric-container.metric-compact .metric-value {{
         font-size: 1.3rem !important;
+    }}
+    /* --- Групові блоки метрик --- */
+    .metric-group {{
+        background: {KPO_CARD_BG};
+        border: 1px solid {KPO_BORDER};
+        border-left: 3px solid {KPO_CYAN};
+        border-radius: 8px;
+        padding: 0.55rem 0.85rem;
+        margin-bottom: 0.5rem;
+        transition: border-left-color 0.15s ease;
+    }}
+    .metric-group:hover {{ border-left-color: {KPO_AMBER}; }}
+    .metric-group-title {{
+        font-size: 0.63rem !important;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: {KPO_TEXT_MUTED} !important;
+        margin-bottom: 0.45rem;
+        padding-bottom: 0.32rem;
+        border-bottom: 1px solid {KPO_BORDER};
+    }}
+    .group-metric-row {{
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding: 0.32rem 0;
+        gap: 0.5rem;
+    }}
+    .group-metric-row + .group-metric-row {{
+        border-top: 1px solid rgba(31, 39, 51, 0.55);
+    }}
+    .group-metric-label {{
+        font-size: 0.72rem !important;
+        font-weight: 500;
+        color: {KPO_TEXT_MUTED} !important;
+        flex: 1;
+        line-height: 1.25;
+    }}
+    .group-metric-value {{
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 1.02rem !important;
+        font-weight: 700;
+        color: {KPO_TEXT} !important;
+        text-align: right;
+        white-space: nowrap;
+        line-height: 1.2;
     }}
     .metric-label {{
         font-size: 0.7rem !important;
@@ -1299,66 +1377,155 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "📈 Динаміка"
 # TAB 1: OVERVIEW
 # ============================================================
 with tab1:
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    # Суми за типами днів (лише дні з даними)
+    total_weekday_val = float(filtered_stats[weekday_mask]["value"].sum()) if len(filtered_stats) else 0.0
+    total_weekend_val = float(filtered_stats[weekend_mask]["value"].sum()) if len(filtered_stats) else 0.0
+
+    col1, col2, col3, col4 = st.columns([1, 1, 1.15, 1.15])
+
+    # ---------- Колонка 1: Всього ----------
     with col1:
-        st.markdown(custom_metric("Всього", f"{total_value:,.0f}", "Загальна кількість операцій за вибраний період (включно з календарними днями без внесених даних)", compact=True), unsafe_allow_html=True)
+        st.markdown(metric_group("Всього", [
+            {
+                "label": "Загальна кількість",
+                "value": f"{total_value:,.0f}",
+                "help": "Загальна кількість операцій за вибраний період "
+                        "(включно з календарними днями без внесених даних)",
+            },
+            {
+                "label": "Будні",
+                "value": f"{total_weekday_val:,.0f}",
+                "help": "Сума операцій за будні (лише дні з внесеними даними)",
+            },
+            {
+                "label": "Вихідні",
+                "value": f"{total_weekend_val:,.0f}",
+                "help": "Сума операцій за вихідні (лише дні з внесеними даними)",
+            },
+        ]), unsafe_allow_html=True)
+
+    # ---------- Колонка 2: Середнє ----------
     with col2:
-        st.markdown(custom_metric("Середнє за день", f"{daily_avg:.0f}", "Сумарна кількість поділена на кількість днів, за які реально внесені дані (порожні клітинки не враховуються як нулі)", compact=True), unsafe_allow_html=True)
+        avg_weekday_str = (
+            f"{daily_avg_weekday:.0f}"
+            if daily_avg_weekday is not None and not pd.isna(daily_avg_weekday)
+            else "—"
+        )
+        avg_weekend_str = (
+            f"{daily_avg_weekend:.0f}"
+            if daily_avg_weekend is not None and not pd.isna(daily_avg_weekend)
+            else "—"
+        )
+        st.markdown(metric_group("Середнє", [
+            {
+                "label": "За день",
+                "value": f"{daily_avg:.0f}",
+                "help": "Сумарна кількість поділена на кількість днів, за які "
+                        "реально внесені дані (порожні клітинки не враховуються як нулі)",
+            },
+            {
+                "label": "Будні",
+                "value": avg_weekday_str,
+                "help": "Середня кількість операцій у будні (лише дні з внесеними даними)",
+            },
+            {
+                "label": "Вихідні",
+                "value": avg_weekend_str,
+                "help": "Середня кількість операцій у вихідні (лише дні з внесеними даними)",
+            },
+        ]), unsafe_allow_html=True)
+
+    # ---------- Колонка 3: Піки та якість ----------
     with col3:
-        avg_weekday_str = f"{daily_avg_weekday:.0f}" if daily_avg_weekday is not None and not pd.isna(daily_avg_weekday) else "—"
-        st.markdown(custom_metric("Середнє за будні", avg_weekday_str, "Середня кількість операцій у будні (лише дні з внесеними даними)", compact=True), unsafe_allow_html=True)
-    with col4:
-        avg_weekend_str = f"{daily_avg_weekend:.0f}" if daily_avg_weekend is not None and not pd.isna(daily_avg_weekend) else "—"
-        st.markdown(custom_metric("Середнє за вихідні", avg_weekend_str, "Середня кількість операцій у вихідні (лише дні з внесеними даними)", compact=True), unsafe_allow_html=True)
-    with col5:
         peak_display = f"{peak:,.0f}" if peak > 0 else "—"
         if peak_date is not None:
             peak_display += f" ({peak_date.strftime('%d.%m')})"
-        st.markdown(custom_metric("Пік за день", peak_display, "Найбільша кількість операцій за один день (лише дні з внесеними даними). У дужках – дата піку.", compact=True), unsafe_allow_html=True)
-    with col6:
-        st.markdown(custom_metric(
-            "Коефіцієнт погоджень",
-            approval_rate_str,
-            f"Частка TRUE (погоджено) від TRUE+FALSE за вибраний період і вибрані операції. "
-            f"🟢 ≥{APPROVAL_GOOD_THRESHOLD}% 🟡 {APPROVAL_WARN_THRESHOLD}-{APPROVAL_GOOD_THRESHOLD}% 🔴 <{APPROVAL_WARN_THRESHOLD}%",
-            color=approval_rate_color(approval_rate_val if approval_rate_available else None),
-            compact=True,
-        ), unsafe_allow_html=True)
+        st.markdown(metric_group("Піки та якість", [
+            {
+                "label": "Пік за день",
+                "value": peak_display,
+                "help": "Найбільша кількість операцій за один день "
+                        "(лише дні з внесеними даними). У дужках – дата піку.",
+            },
+            {
+                "label": "Пік / середнє",
+                "value": f"{peak_avg_ratio:.2f}×",
+                "help": "У скільки разів пік перевищує середнє",
+            },
+            {
+                "label": "Стабільність (CV)",
+                "value": f"{cv:.1f}%" if cv > 0 else "—",
+                "color": cv_color(cv if cv > 0 else None),
+                "help": "Коефіцієнт варіації (лише дні з внесеними даними). "
+                        "🟢 <15% 🟡 15-30% 🔴 >30%",
+            },
+            {
+                "label": "Коефіцієнт погоджень",
+                "value": approval_rate_str,
+                "color": approval_rate_color(approval_rate_val if approval_rate_available else None),
+                "help": f"Частка TRUE (погоджено) від TRUE+FALSE за вибраний період "
+                        f"і вибрані операції. "
+                        f"🟢 ≥{APPROVAL_GOOD_THRESHOLD}% "
+                        f"🟡 {APPROVAL_WARN_THRESHOLD}-{APPROVAL_GOOD_THRESHOLD}% "
+                        f"🔴 <{APPROVAL_WARN_THRESHOLD}%",
+            },
+        ]), unsafe_allow_html=True)
 
-    col7, col8, col9, col10, col11 = st.columns(5)
-    with col7:
-        st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×", "У скільки разів пік перевищує середнє", compact=True), unsafe_allow_html=True)
-    with col8:
-        st.markdown(custom_metric("Стабільність (CV)", f"{cv:.1f}%" if cv > 0 else "—", "Коефіцієнт варіації (лише дні з внесеними даними). 🟢 <15% 🟡 15-30% 🔴 >30%", color=cv_color(cv if cv > 0 else None), compact=True), unsafe_allow_html=True)
-    with col9:
+    # ---------- Колонка 4: Лідери + Порівняння ----------
+    with col4:
         if busiest_weekday:
             day_ua = WEEKDAY_UA.get(busiest_weekday, busiest_weekday)
-            val = f"{day_ua} — {busiest_weekday_val:.0f}/день"
-            help_txt = "День тижня з найвищим середнім навантаженням (лише дні з внесеними даними)"
+            wd_val = f"{day_ua} — {busiest_weekday_val:.0f}/день"
+            wd_help = "День тижня з найвищим середнім навантаженням (лише дні з внесеними даними)"
         else:
-            val = "—"
-            help_txt = None
-        st.markdown(custom_metric("Найактивніший день", val, help_txt, compact=True), unsafe_allow_html=True)
-    with col10:
+            wd_val = "—"
+            wd_help = None
+
         if busiest_op:
-            display_name = busiest_op if len(busiest_op) <= 12 else busiest_op[:10] + "…"
-            val = f'{display_name} — {busiest_op_val:,.0f}'
-            help_txt = f"{busiest_op} — {busiest_op_val:,.0f} (повна назва)"
+            display_name = busiest_op if len(busiest_op) <= 13 else busiest_op[:11] + "…"
+            op_val = f"{display_name} — {busiest_op_val:,.0f}"
+            op_help = f"{busiest_op} — {busiest_op_val:,.0f} (повна назва)"
         else:
-            val = "—"
-            help_txt = None
-        st.markdown(custom_metric("Найактивніша операція", val, help_txt, compact=True), unsafe_allow_html=True)
-    with col11:
+            op_val = "—"
+            op_help = None
+
+        st.markdown(metric_group("Лідери", [
+            {"label": "Найактивніший день", "value": wd_val, "help": wd_help},
+            {"label": "Найактивніша операція", "value": op_val, "help": op_help},
+        ]), unsafe_allow_html=True)
+
+        # Порівняння — окрема картка (мультирядкова)
         if period_mode == "За місяцями" and len(selected_months) == 1 and operation_mode == "Тотал":
-            st.markdown("**Порівняння**")
             if comparison_text != "—":
                 parts = comparison_text.split("  ")
-                for part in parts:
-                    st.markdown(f"<p class='comparison-text'>{html.escape(part)}</p>", unsafe_allow_html=True)
+                comp_html = "".join(
+                    f"<p class='comparison-text'>{html.escape(part)}</p>"
+                    for part in parts
+                )
+                st.markdown(f"""
+                <div class="metric-container metric-compact">
+                    <div class="metric-label">Порівняння</div>
+                    {comp_html}
+                </div>
+                """, unsafe_allow_html=True)
             else:
-                st.markdown("<p class='comparison-text'>—</p>", unsafe_allow_html=True)
+                st.markdown(
+                    custom_metric(
+                        "Порівняння", "—",
+                        "Немає даних для порівняння з попереднім місяцем/роком",
+                        compact=True,
+                    ),
+                    unsafe_allow_html=True,
+                )
         else:
-            st.markdown(custom_metric("Порівняння", "—", "Доступно лише для одного місяця в режимі 'За місяцями' + 'Тотал'", compact=True), unsafe_allow_html=True)
+            st.markdown(
+                custom_metric(
+                    "Порівняння", "—",
+                    "Доступно лише для одного місяця в режимі 'За місяцями' + 'Тотал'",
+                    compact=True,
+                ),
+                unsafe_allow_html=True,
+            )
 
     st.divider()
     st.subheader("💡 Інсайти")
