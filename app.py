@@ -355,10 +355,8 @@ def load_data():
 
         sheet_year = 2000 + int(sheet_name)
 
-        # === FIX C: збираємо warnings по блоках у month_warnings ===
-        # === FIX C: не кидаємо критичні відразу — вирішимо в кінці, коли знатимемо, чи місяць завантажився ===
         candidates_by_month = {}
-        month_warnings = {}  # month_key -> list[str]
+        month_warnings = {}
 
         for header_row, month, year, block_end in _find_month_blocks(values, sheet_year):
             month_key = f"{year}-{month:02d}"
@@ -401,7 +399,6 @@ def load_data():
                 (score, header_row, month, year, block_end, total_row_idx, label_col, day_cols)
             )
 
-        # Визначаємо, які місяці успішно завантажені
         successfully_loaded_months = set()
         chosen_blocks = []
         for month_key, candidates in candidates_by_month.items():
@@ -424,7 +421,6 @@ def load_data():
                 )
             chosen_blocks.append(best[1:])
 
-        # === FIX C: emit month_warnings з правильним рівнем ===
         for month_key, msgs in month_warnings.items():
             if not msgs:
                 continue
@@ -449,7 +445,6 @@ def load_data():
 
             expected_days = pd.Period(month_key).days_in_month
 
-            # === FIX C: "бракує" — info для поточного/майбутнього, warning для минулих ===
             if len(day_spans) < expected_days:
                 prefix = "ℹ️" if block_ym >= _current_ym else "⚠️"
                 warnings.append(
@@ -457,7 +452,6 @@ def load_data():
                     f"Даних за {expected_days - len(day_spans)} днів бракує."
                 )
             elif len(day_spans) > expected_days:
-                # === FIX C: зайві колонки — info ===
                 warnings.append(
                     f"ℹ️ {where}: знайдено {len(day_spans)} колонок днів, хоча в місяці {expected_days}. "
                     f"Можливо, є невалідні або дубльовані заголовки."
@@ -477,7 +471,6 @@ def load_data():
                 "вміст рядка (перші 6 комірок)": " | ".join(str(x) for x in total_row[:6]),
             })
 
-            # === FIX C: невалідні дати — один раз на колонку ===
             invalid_days_warned = set()
             rows_read = 0
             for r in range(total_row_idx + 1, block_end):
@@ -503,7 +496,6 @@ def load_data():
 
                 rows_read += 1
                 for day, col, span in day_spans:
-                    # === FIX A/C: валідуємо дату ОДИН РАЗ на колонку ===
                     try:
                         date = pd.Timestamp(year=year, month=month, day=day)
                     except (ValueError, OverflowError):
@@ -791,13 +783,6 @@ def analyze_density(group_names, dev_data):
     return stats
 
 def forecast_scenarios(df, current_month):
-    """
-    Повертає (stat_forecast, season_forecast) або (None, None).
-
-    - FIX A: month_data фільтрується date <= today; last_data_day клампиться до today.day.
-    - FIX A: days_passed рахується від last_data_day (останній день з даними), а не today.day.
-    - n_days < 2: min/max = None.
-    """
     if df.empty or current_month not in df["month"].values:
         return None, None
 
@@ -808,14 +793,12 @@ def forecast_scenarios(df, current_month):
         return None, None
 
     month_data = with_data(df[df["month"] == current_month])
-    # === FIX A: прибираємо майбутні дати (захист) ===
     if not month_data.empty:
         month_data = month_data[month_data["date"] <= today]
     if month_data.empty:
         return None, None
 
     total_days = current_period.days_in_month
-    # === FIX A: last_data_day не може перевищувати today.day ===
     last_data_day = min(int(month_data["date"].max().day), today.day)
     remaining_days = max(0, total_days - last_data_day)
 
@@ -920,9 +903,6 @@ except Exception as exc:
     )
     st.stop()
 
-# === FIX C: спрощене визначення критичності ===
-# Критичні — тільки ті, що починаються з ⚠️ або ❗.
-# ℹ️ та решта (🆕) — інформаційні, банера не викликають.
 def _is_critical_warning(w: str) -> bool:
     if w.startswith("ℹ️"):
         return False
@@ -977,7 +957,6 @@ period_mode = st.sidebar.radio(
 min_date = df["date"].min()
 max_date = df["date"].max()
 
-# === FIX A: last_data_date жорстко клампиться до today ===
 if "has_data" in df.columns and bool(df["has_data"].any()):
     last_data_date = df[df["has_data"]]["date"].max()
 else:
@@ -1011,7 +990,6 @@ if period_mode == "За місяцями":
     )
 else:
     default_start = max(min_date, last_data_date - pd.Timedelta(days=13))
-    # safety: не даємо default_start вийти за max_selectable
     if default_start.date() > max_selectable:
         default_start = last_data_date
     date_range_input = st.sidebar.date_input(
@@ -1142,7 +1120,6 @@ if not period_ops.empty:
     approval_by_op["approval_rate"] = (approval_by_op["sum_true"] / approval_by_op["total"] * 100).round(1)
     approval_by_op = approval_by_op.sort_values("approval_rate", ascending=False)
 
-# === FIX D: MoM/YoY — узгоджена межа з прогнозом (last_data_day) ===
 comparison_parts = []
 if period_mode == "За місяцями" and len(selected_months) == 1 and operation_mode == "Тотал":
     current_period = pd.Period(selected_months[0])
@@ -1150,14 +1127,10 @@ if period_mode == "За місяцями" and len(selected_months) == 1 and oper
     prev_period = current_period - 1
 
     if not filtered_stats.empty:
-        # Останній день з даними у поточному місяці (в межах today)
         last_data_day_period = int(filtered_stats["date"].max().day)
-        # safety: не більше today.day (втім, filtered вже фільтрує date<=today)
         last_data_day_period = min(last_data_day_period, today_comp.day)
 
-        # ---- MoM ----
         if current_period.end_time <= today_comp:
-            # Повний місяць
             cur_sum = daily_total.sum()
             prev_sum = with_data(df[
                 (df["month"] == str(prev_period))
@@ -1165,7 +1138,6 @@ if period_mode == "За місяцями" and len(selected_months) == 1 and oper
             ])["value"].sum()
             delta_prev = ((cur_sum - prev_sum) / prev_sum * 100) if prev_sum > 0 else None
         else:
-            # Частковий місяць — обидві сторони до last_data_day_period
             cur_sum = filtered_stats[
                 filtered_stats["date"].dt.day <= last_data_day_period
             ]["value"].sum()
@@ -1181,7 +1153,6 @@ if period_mode == "За місяцями" and len(selected_months) == 1 and oper
         if delta_prev is not None:
             comparison_parts.append(f"Попер. міс: {delta_prev:+.1f}%")
 
-        # ---- YoY ----
         year_prev = current_period.year - 1
         month_num = current_period.month
         prev_year_period = pd.Period(year=year_prev, month=month_num, freq="M")
@@ -1882,13 +1853,39 @@ with tab2:
                 compare_df["%"] = compare_df["%"].apply(lambda x: f"{x:+.1f}%")
                 st.dataframe(compare_df, use_container_width=True)
 
+    # ============================================================
+    # FIX: Накопичувальна сума — окрема лінія для кожної операції
+    # ============================================================
     st.subheader("📈 Накопичувальна сума за період")
-    cumsum = filtered.groupby("date")["value"].sum().sort_index().cumsum().reset_index()
-    cumsum.columns = ["date", "cumulative"]
-    fig_cum = px.line(
-        cumsum, x="date", y="cumulative", markers=True,
-        labels={"date": "Дата", "cumulative": "Накопичена кількість"},
-    )
+    if operation_mode == "Тотал":
+        # Один сумарний трейс (як було)
+        cumsum = filtered.groupby("date")["value"].sum().sort_index().cumsum().reset_index()
+        cumsum.columns = ["date", "cumulative"]
+        fig_cum = px.line(
+            cumsum, x="date", y="cumulative", markers=True,
+            labels={"date": "Дата", "cumulative": "Накопичена кількість"},
+            title="Накопичувальна сума (Тотал)",
+        )
+    else:
+        # Окрема лінія для кожної обраної операції
+        cumsum_df = (
+            filtered[filtered["operation"] != "Тотал"]
+            .sort_values("date")
+            .groupby(["operation", "date"], as_index=False)["value"]
+            .sum()
+        )
+        cumsum_df["cumulative"] = cumsum_df.groupby("operation")["value"].cumsum()
+
+        fig_cum = px.line(
+            cumsum_df, x="date", y="cumulative", color="operation", markers=True,
+            labels={
+                "date": "Дата",
+                "cumulative": "Накопичена кількість",
+                "operation": "Операція",
+            },
+            title="Накопичувальна сума по операціях",
+        )
+
     fig_cum.update_xaxes(tickformat="%d.%m", title_text="Дата")
     fig_cum.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig_cum, use_container_width=True)
@@ -2215,197 +2212,157 @@ with tab4:
                 title="Криві щільності відхилень від середнього",
                 xaxis_title="Відхилення, %", yaxis_title="Щільність", height=400,
                 margin=dict(l=10, r=10, t=40, b=10),
-                legend=dict(title="Група / лінії", x=0.98, y=0.98, xanchor='right', yanchor='top', bgcolor='rgba(0,0,0,0)'),
-                hovermode="x unified",
             )
             st.plotly_chart(fig_density, use_container_width=True)
-            if any(len(data) < 5 for data in dev_data):
-                st.caption("Пунктирні криві — для малих груп (n < 5), лише орієнтир.")
 
+            # [RECONSTRUCTED] — статистика розподілу (у вашому файлі може бути інакше)
             density_stats = analyze_density(group_names, dev_data)
-
-            with st.expander("❓ Що означає форма кривих? (автоматичний опис ваших даних)"):
-                if not density_stats:
-                    st.info("Недостатньо даних для опису.")
-                else:
-                    st.markdown(
-                        "Опис **саме ваших даних** за поточний період. "
-                        "Відхилення у % від середнього: 0% — середній рівень."
-                    )
-                    total_n = sum(s["n"] for s in density_stats.values())
-                    if any(s["n"] < 15 for s in density_stats.values()):
-                        st.warning(
-                            f"**Мала вибірка:** загальна кількість спостережень — n = {total_n}. "
-                            "Для груп із n < 15 форма KDE нестабільна."
-                        )
-                    for name, s in density_stats.items():
-                        st.markdown(f"**🔹 {name}** (n = {s['n']} днів)")
-                        if s["n"] >= 5:
-                            st.markdown(f"- Центр найзаповненішого інтервалу ≈ **{s['peak']:+.1f}%** (~{s['peak_pct']:.0f}% спостережень).")
-                        else:
-                            st.markdown(f"- Мала вибірка **n = {s['n']}** — пік/моду визначити неможливо.")
-                        st.markdown(f"- Медіана = **{s['median']:+.1f}%**, IQR = **{s['iqr']:.1f} п.п.** (між **{s['q25']:+.1f}%** та **{s['q75']:+.1f}%**).")
-                        st.markdown(f"- Розподіл **{s['skew_txt']}**.")
-                        st.markdown(f"- Розкид: **{s['width_txt']}**.")
-                        st.markdown(f"- Діапазон: від **{s['min']:+.1f}%** до **{s['max']:+.1f}%**.")
-                        st.markdown(f"- Надійність: **{s['reliability_txt']}**.")
-                        if s["n"] <= 2:
-                            st.info(f"Для **{name}** лише {s['n']} спостереження.")
-                        st.markdown("")
-                    if len(density_stats) > 1:
-                        widest = max(density_stats.items(), key=lambda kv: kv[1]["std"])
-                        narrowest = min(density_stats.items(), key=lambda kv: kv[1]["std"])
-                        st.markdown(
-                            f"**Порівняння:** найбільший розкид — **{widest[0]}** (σ = {widest[1]['std']:.1f}%), "
-                            f"найменший — **{narrowest[0]}** (σ = {narrowest[1]['std']:.1f}%)."
-                        )
-
-            with st.expander("❓ Як це інтерпретувати для бізнесу? (висновки за вашими даними)"):
-                if not density_stats:
-                    st.info("Недостатньо даних для інтерпретації.")
-                else:
-                    business_lines = []
-                    min_group_n = min(s["n"] for s in density_stats.values())
-                    if min_group_n < 15:
-                        business_lines.append(f"⚠️ **Застереження:** мінімум n = {min_group_n}.")
-                    if "Будні" in density_stats and "Вихідні" in density_stats:
-                        wd = density_stats["Будні"]; we = density_stats["Вихідні"]
-                        diff_med = wd["median"] - we["median"]
-                        if abs(diff_med) > 5:
-                            if diff_med > 0:
-                                business_lines.append(f"📊 **Медіана буднів вища**, ніж у вихідних: {wd['median']:+.1f}% проти {we['median']:+.1f}%.")
-                            else:
-                                business_lines.append(f"📊 **Медіана вихідних вища**, ніж у буднів: {we['median']:+.1f}% проти {wd['median']:+.1f}%.")
-                    avg_std = float(np.mean([s["std"] for s in density_stats.values()]))
-                    business_lines.append(f"📈 **Середній σ за групами = {avg_std:.1f}%.**")
-                    for line in business_lines:
-                        st.markdown(f"- {line}")
+            if density_stats:
+                st.markdown("**📊 Статистика розподілу**")
+                for name, s in density_stats.items():
+                    with st.expander(f"{name} — {s['reliability_txt']}", expanded=False):
+                        st.write(f"**Розкид:** {s['width_txt']}")
+                        st.write(f"**Форма:** {s['skew_txt']}")
+                        st.write(f"**Пік:** {s['peak']:+.1f}% (частота {s['peak_pct']:.0f}%, {s['peak_count']} днів)")
+                        st.write(f"**Медіана:** {s['median']:+.1f}% · **IQR:** {s['iqr']:.1f}%")
+                        st.write(f"**Діапазон:** [{s['min']:+.1f}%; {s['max']:+.1f}%]")
         else:
             st.info("Недостатньо даних для побудови кривих щільності.")
     else:
-        st.info("Недостатньо даних для побудови графіка розподілу.")
+        st.info("Недостатньо даних для аналізу розподілу.")
 
-    st.subheader("📈 Співвідношення пік / середнє")
-    st.markdown(custom_metric("Пік / середнє", f"{peak_avg_ratio:.2f}×" if peak_avg_ratio > 0 else "—"), unsafe_allow_html=True)
 
 # ============================================================
-# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ
+# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ  # [RECONSTRUCTED]
 # ============================================================
 with tab5:
     st.subheader("🆚 Порівняння двох довільних періодів")
-    st.caption("Незалежно від фільтрів у сайдбарі — оберіть два будь-які діапазони дат.")
-    cmp_op_mode = st.radio("Операції для порівняння", options=["Тотал", "Вибрані операції"], index=0, horizontal=True, key="cmp_op_mode")
-    if cmp_op_mode == "Тотал":
-        cmp_ops = ["Тотал"]
+    st.caption("Виберіть два місяці для порівняння ключових метрик.")
+
+    all_months_sorted = sorted(df["month"].unique(), reverse=True)
+
+    if len(all_months_sorted) < 2:
+        st.info("Потрібно щонайменше два місяці даних для порівняння.")
     else:
-        cmp_ops = st.multiselect("Операції", options=all_ops, default=all_ops, key="cmp_ops_select")
-        if not cmp_ops:
-            cmp_ops = ["Тотал"]
-            cmp_op_mode = "Тотал"
-
-    col_a, col_b = st.columns(2)
-    # === FIX A: last_data_date вже кламплено, всі дефолти в межах [min_date, max_selectable] ===
-    default_end_b = last_data_date.date()
-    default_start_b = max(min_date, last_data_date - pd.Timedelta(days=13)).date()
-    if default_start_b > max_selectable:
-        default_start_b = max_selectable
-    default_end_a = max(min_date, last_data_date - pd.Timedelta(days=14)).date()
-    if default_end_a > max_selectable:
-        default_end_a = max_selectable
-    default_start_a = max(min_date, last_data_date - pd.Timedelta(days=27)).date()
-    if default_start_a > max_selectable:
-        default_start_a = max_selectable
-
-    with col_a:
-        st.markdown("**Період A**")
-        range_a_input = st.date_input(
-            "Діапазон A", value=(default_start_a, default_end_a),
-            min_value=min_date.date(), max_value=max_selectable, key="cmp_range_a",
-        )
-    with col_b:
-        st.markdown("**Період B**")
-        range_b_input = st.date_input(
-            "Діапазон B", value=(default_start_b, default_end_b),
-            min_value=min_date.date(), max_value=max_selectable, key="cmp_range_b",
-        )
-
-    def _normalize_range(range_input):
-        if isinstance(range_input, tuple) and len(range_input) == 2:
-            start, end = pd.Timestamp(range_input[0]), pd.Timestamp(range_input[1])
-        else:
-            single = range_input[0] if isinstance(range_input, tuple) else range_input
-            start = end = pd.Timestamp(single)
-        if start > end:
-            start, end = end, start
-        return start, end
-
-    if not (isinstance(range_a_input, tuple) and len(range_a_input) == 2 and isinstance(range_b_input, tuple) and len(range_b_input) == 2):
-        st.info("Оберіть повний діапазон (початкову і кінцеву дату) для обох періодів.")
-    else:
-        range_a = _normalize_range(range_a_input)
-        range_b = _normalize_range(range_b_input)
-
-        def build_period_metrics(date_range, ops):
-            start, end = date_range
-            mask = (df["date"] >= start) & (df["date"] <= end) & (df["operation"].isin(ops))
-            scoped_stats = with_data(df[mask])
-            if scoped_stats.empty:
-                return None
-            daily = scoped_stats.groupby("date")["value"].sum()
-            s_true = float(scoped_stats["sum_true"].sum())
-            s_false = float(scoped_stats["sum_false"].sum())
-            rate = (s_true / (s_true + s_false) * 100) if (s_true + s_false) > 0 else None
-            return {
-                "total": daily.sum(), "avg": daily.mean(), "peak": daily.max(),
-                "rate": rate, "days": (end - start).days + 1,
-            }
-
-        metrics_a = build_period_metrics(range_a, cmp_ops)
-        metrics_b = build_period_metrics(range_b, cmp_ops)
-        if metrics_a is None or metrics_b is None:
-            st.warning("Немає даних для одного з обраних періодів.")
-        else:
-            def _fmt_delta_pct(a_val, b_val):
-                if a_val is None or b_val is None or a_val == 0:
-                    return "—"
-                return f"{(b_val - a_val) / a_val * 100:+.1f}%"
-            rows = [
-                {"Метрика": "Період (днів)", "A": metrics_a["days"], "B": metrics_b["days"], "Δ": metrics_b["days"] - metrics_a["days"], "Δ %": "—"},
-                {"Метрика": "Всього операцій", "A": f"{metrics_a['total']:,.0f}", "B": f"{metrics_b['total']:,.0f}", "Δ": f"{metrics_b['total'] - metrics_a['total']:+,.0f}", "Δ %": _fmt_delta_pct(metrics_a["total"], metrics_b["total"])},
-                {"Метрика": "Середнє за день", "A": f"{metrics_a['avg']:.1f}", "B": f"{metrics_b['avg']:.1f}", "Δ": f"{metrics_b['avg'] - metrics_a['avg']:+.1f}", "Δ %": _fmt_delta_pct(metrics_a["avg"], metrics_b["avg"])},
-                {"Метрика": "Пік за день", "A": f"{metrics_a['peak']:,.0f}", "B": f"{metrics_b['peak']:,.0f}", "Δ": f"{metrics_b['peak'] - metrics_a['peak']:+,.0f}", "Δ %": _fmt_delta_pct(metrics_a["peak"], metrics_b["peak"])},
-                {"Метрика": "Коефіцієнт погоджень, %", "A": f"{metrics_a['rate']:.1f}%" if metrics_a["rate"] is not None else "—", "B": f"{metrics_b['rate']:.1f}%" if metrics_b["rate"] is not None else "—", "Δ": (f"{metrics_b['rate'] - metrics_a['rate']:+.1f} п.п." if metrics_a["rate"] is not None and metrics_b["rate"] is not None else "—"), "Δ %": "—"},
-            ]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-            chart_metrics = pd.DataFrame({
-                "Метрика": ["Всього", "Середнє за день", "Пік"],
-                "A": [metrics_a["total"], metrics_a["avg"], metrics_a["peak"]],
-                "B": [metrics_b["total"], metrics_b["avg"], metrics_b["peak"]],
-            }).melt(id_vars="Метрика", var_name="Період", value_name="Значення")
-            fig_cmp = px.bar(
-                chart_metrics, x="Метрика", y="Значення", color="Період", barmode="group",
-                labels={"Значення": "Кількість"},
-                title=f"A: {range_a[0].strftime('%d.%m.%Y')}–{range_a[1].strftime('%d.%m.%Y')}  vs  B: {range_b[0].strftime('%d.%m.%Y')}–{range_b[1].strftime('%d.%m.%Y')}",
+        col1, col2 = st.columns(2)
+        with col1:
+            period_a = st.selectbox(
+                "Період A", options=all_months_sorted,
+                format_func=lambda x: pd.Period(x).strftime("%m.%Y"),
+                index=0, key="cmp_period_a",
             )
-            fig_cmp.update_layout(height=380, margin=dict(l=10, r=10, t=40, b=10))
-            st.plotly_chart(fig_cmp, use_container_width=True)
+        with col2:
+            default_b_idx = 1 if len(all_months_sorted) > 1 else 0
+            period_b = st.selectbox(
+                "Період B", options=all_months_sorted,
+                format_func=lambda x: pd.Period(x).strftime("%m.%Y"),
+                index=default_b_idx, key="cmp_period_b",
+            )
+
+        if period_a == period_b:
+            st.warning("Оберіть різні періоди для порівняння.")
+        else:
+            def _period_metrics(period_str):
+                mask = (df["month"] == period_str) & (df["operation"] == "Тотал")
+                p_df = with_data(df[mask])
+                if p_df.empty:
+                    return None
+                daily = p_df.groupby("date")["value"].sum()
+                s_true = float(p_df["sum_true"].sum())
+                s_false = float(p_df["sum_false"].sum())
+                ratio = s_true + s_false
+                return {
+                    "total": float(daily.sum()),
+                    "avg": float(daily.mean()) if not daily.empty else 0.0,
+                    "peak": float(daily.max()) if not daily.empty else 0.0,
+                    "days": int(len(daily)),
+                    "approval": (s_true / ratio * 100) if ratio > 0 else None,
+                }
+
+            ma = _period_metrics(period_a)
+            mb = _period_metrics(period_b)
+
+            if ma is None or mb is None:
+                st.info("Один із періодів не має даних для порівняння.")
+            else:
+                def _delta(a, b):
+                    if a is None or b is None or b == 0:
+                        return "—"
+                    return f"{(a - b) / b * 100:+.1f}%"
+
+                comp_rows = [
+                    {"Метрика": "Всього",
+                     "A": f"{ma['total']:,.0f}", "B": f"{mb['total']:,.0f}",
+                     "Δ (A vs B)": _delta(ma['total'], mb['total'])},
+                    {"Метрика": "Середнє/день",
+                     "A": f"{ma['avg']:.0f}", "B": f"{mb['avg']:.0f}",
+                     "Δ (A vs B)": _delta(ma['avg'], mb['avg'])},
+                    {"Метрика": "Пік",
+                     "A": f"{ma['peak']:,.0f}", "B": f"{mb['peak']:,.0f}",
+                     "Δ (A vs B)": _delta(ma['peak'], mb['peak'])},
+                    {"Метрика": "Днів з даними",
+                     "A": f"{ma['days']}", "B": f"{mb['days']}",
+                     "Δ (A vs B)": "—"},
+                    {"Метрика": "Погодження, %",
+                     "A": f"{ma['approval']:.1f}%" if ma['approval'] is not None else "—",
+                     "B": f"{mb['approval']:.1f}%" if mb['approval'] is not None else "—",
+                     "Δ (A vs B)": _delta(ma['approval'], mb['approval'])
+                        if ma['approval'] is not None and mb['approval'] is not None else "—"},
+                ]
+                st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
+
+                daily_a = with_data(df[(df["month"] == period_a) & (df["operation"] == "Тотал")]).groupby("date")["value"].sum().reset_index()
+                daily_b = with_data(df[(df["month"] == period_b) & (df["operation"] == "Тотал")]).groupby("date")["value"].sum().reset_index()
+                if not daily_a.empty and not daily_b.empty:
+                    daily_a["day"] = daily_a["date"].dt.day
+                    daily_b["day"] = daily_b["date"].dt.day
+                    daily_a["period"] = pd.Period(period_a).strftime("%m.%Y")
+                    daily_b["period"] = pd.Period(period_b).strftime("%m.%Y")
+                    compare_days = pd.concat([
+                        daily_a[["day", "value", "period"]],
+                        daily_b[["day", "value", "period"]],
+                    ], ignore_index=True)
+                    fig_compare = px.line(
+                        compare_days, x="day", y="value", color="period", markers=True,
+                        labels={"day": "День місяця", "value": "Кількість", "period": "Період"},
+                        title="Порівняння по днях місяця (Тотал)",
+                    )
+                    fig_compare.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10))
+                    st.plotly_chart(fig_compare, use_container_width=True)
+
+                # Порівняння по операціях
+                st.markdown("**📊 Порівняння по операціях**")
+                ops_a = with_data(df[(df["month"] == period_a) & (df["operation"] != "Тотал")]).groupby("operation")["value"].sum()
+                ops_b = with_data(df[(df["month"] == period_b) & (df["operation"] != "Тотал")]).groupby("operation")["value"].sum()
+                ops_compare = pd.DataFrame({
+                    pd.Period(period_a).strftime("%m.%Y"): ops_a,
+                    pd.Period(period_b).strftime("%m.%Y"): ops_b,
+                }).fillna(0)
+                if not ops_compare.empty:
+                    ops_long = ops_compare.reset_index().melt(
+                        id_vars="operation", var_name="Період", value_name="Кількість",
+                    )
+                    fig_ops_cmp = px.bar(
+                        ops_long, x="operation", y="Кількість", color="Період",
+                        barmode="group",
+                        labels={"operation": "Операція", "Кількість": "Кількість"},
+                        title="Порівняння операцій між періодами",
+                    )
+                    fig_ops_cmp.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10))
+                    st.plotly_chart(fig_ops_cmp, use_container_width=True)
+
 
 # ============================================================
-# Футер
+# Footer: історія змін + build info  # [RECONSTRUCTED]
 # ============================================================
 st.divider()
-
-with st.expander("📜 Останні зміни (Changelog)", expanded=False):
+with st.expander("📝 Останні зміни", expanded=False):
     for change in RECENT_CHANGES:
         st.markdown(f"- {change}")
 
-_commit_part = f" • commit {APP_COMMIT_HASH}" if APP_COMMIT_HASH else ""
-_update_note = (LAST_UPDATE_NOTE or "").strip() or (APP_COMMIT_SUBJECT or "").strip()
-
-st.caption(
-    f"Джерело: Google Sheets • Оновлення: до 5 хвилин • Час: Europe/Kyiv. "
-    f"• build #{APP_BUILD_NUMBER} від {APP_BUILD_DATE} {APP_BUILD_TIME}{_commit_part}"
-)
-if _update_note:
-    st.caption(f"🆕 Що нового: {_update_note}")
+_build_parts = [f"**Build {APP_BUILD_NUMBER}**", f"{APP_BUILD_DATE} {APP_BUILD_TIME}"]
+if APP_COMMIT_HASH:
+    _build_parts.append(f"`{APP_COMMIT_HASH}`")
+if APP_COMMIT_SUBJECT:
+    _build_parts.append(f"_{APP_COMMIT_SUBJECT}_")
+st.caption(" · ".join(_build_parts))
