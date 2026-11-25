@@ -82,6 +82,8 @@ def _get_build_info():
 # ────────────────────────────────────────────────────────────
 RECENT_CHANGES = [
     # ── НОВІ ЗМІНИ ДОДАВАЙ СЮДИ (зверху) ──
+    "**v1.16** — Розширено «Порівняння періодів»: тепер можна порівнювати від 2 до 6 місяців одночасно. При 2 періодах — дельта та спільні графіки (як раніше). При 3–6 — окрема таблиця та графік для кожного періоду + спільний графік по операціях. Додано автоматичне обрізання всіх періодів до однакової дати, якщо хоч один із них — поточний місяць.",
+    "**v1.15** — Покращено «Порівняння періодів»: якщо один із вибраних місяців — поточний (незавершений), інший період автоматично обрізається до тієї ж кількості днів (за останній день з даними в поточному місяці). Для двох завершених місяців — як і раніше, повне порівняння. Під графіком — підказка, до якого дня обрізано кожен період.",
     "**v1.14** — Виправлено: «Накопичувальна сума за період» (вкладка «Динаміка») тепер будує **окрему лінію для кожної обраної операції** замість однієї сумарної. У режимі «Тотал» — як і раніше, одна лінія.",
 
     # ── Історія (новіші зверху, старіші знизу) ──
@@ -92,9 +94,6 @@ RECENT_CHANGES = [
     "**v1.9** — Оптимізовано верстку карток метрик.",
     "**v1.8** — Покращено верстку колонок в Overview, зафіксовано підказки `?`.",
     "**v1.7** — Згруповано метрики Overview у блоки «Всього», «Середнє», «Піки та якість», «Лідери».",
-    "**v1.6** — Додано сумарне навантаження «Всього по будням»/«Всього по вихідним».",
-    "**v1.5** — Реалізовано статистичний і сезонний прогнози на поточний місяць.",
-    "**v1.4** — Додано вкладку «Порівняння двох довільних періодів».",
 ]
 
 # Автоматичне обрізання до 10 найновіших.
@@ -2245,124 +2244,299 @@ with tab4:
     else:
         st.info("Недостатньо даних для аналізу розподілу.")
 
-
 # ============================================================
-# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ
+# TAB 5: ПОРІВНЯННЯ ПЕРІОДІВ (2–6 місяців)
 # ============================================================
 with tab5:
-    st.subheader("🆚 Порівняння двох довільних періодів")
-    st.caption("Виберіть два місяці для порівняння ключових метрик.")
+    st.subheader("🆚 Порівняння періодів")
+    st.caption("Виберіть від 2 до 6 місяців. Дельта доступна лише при порівнянні рівно двох періодів.")
 
     all_months_sorted = sorted(df["month"].unique(), reverse=True)
 
     if len(all_months_sorted) < 2:
         st.info("Потрібно щонайменше два місяці даних для порівняння.")
     else:
-        col1, col2 = st.columns(2)
-        with col1:
-            period_a = st.selectbox(
-                "Період A", options=all_months_sorted,
-                format_func=lambda x: pd.Period(x).strftime("%m.%Y"),
-                index=0, key="cmp_period_a",
-            )
-        with col2:
-            default_b_idx = 1 if len(all_months_sorted) > 1 else 0
-            period_b = st.selectbox(
-                "Період B", options=all_months_sorted,
-                format_func=lambda x: pd.Period(x).strftime("%m.%Y"),
-                index=default_b_idx, key="cmp_period_b",
-            )
+        max_n = min(6, len(all_months_sorted))
+        n_options = list(range(2, max_n + 1))
 
-        if period_a == period_b:
-            st.warning("Оберіть різні періоди для порівняння.")
+        if len(n_options) < 1:
+            st.info(f"Недостатньо місяців з даними для порівняння (доступно {len(all_months_sorted)}).")
         else:
-            def _period_metrics(period_str):
-                mask = (df["month"] == period_str) & (df["operation"] == "Тотал")
-                p_df = with_data(df[mask])
-                if p_df.empty:
-                    return None
-                daily = p_df.groupby("date")["value"].sum()
-                s_true = float(p_df["sum_true"].sum())
-                s_false = float(p_df["sum_false"].sum())
-                ratio = s_true + s_false
-                return {
-                    "total": float(daily.sum()),
-                    "avg": float(daily.mean()) if not daily.empty else 0.0,
-                    "peak": float(daily.max()) if not daily.empty else 0.0,
-                    "days": int(len(daily)),
-                    "approval": (s_true / ratio * 100) if ratio > 0 else None,
-                }
+            n_periods = st.radio(
+                "Кількість періодів для порівняння",
+                options=n_options,
+                index=0,
+                horizontal=True,
+                help=(
+                    "При 2 періодах доступні таблиця з дельтою та спільні графіки. "
+                    "При 3+ — окремі таблиці та графіки для кожного періоду (без дельти)."
+                ),
+                key="cmp_n_periods",
+            )
 
-            ma = _period_metrics(period_a)
-            mb = _period_metrics(period_b)
-
-            if ma is None or mb is None:
-                st.info("Один із періодів не має даних для порівняння.")
+            # ── Селектори періодів ──
+            if n_periods <= 3:
+                cols = st.columns(n_periods)
             else:
-                def _delta(a, b):
-                    if a is None or b is None or b == 0:
-                        return "—"
-                    return f"{(a - b) / b * 100:+.1f}%"
+                rows_count = (n_periods + 2) // 3
+                cols = []
+                for _ in range(rows_count):
+                    row_cols = st.columns(3)
+                    for c in row_cols:
+                        if len(cols) < n_periods:
+                            cols.append(c)
 
-                comp_rows = [
-                    {"Метрика": "Всього",
-                     "A": f"{ma['total']:,.0f}", "B": f"{mb['total']:,.0f}",
-                     "Δ (A vs B)": _delta(ma['total'], mb['total'])},
-                    {"Метрика": "Середнє/день",
-                     "A": f"{ma['avg']:.0f}", "B": f"{mb['avg']:.0f}",
-                     "Δ (A vs B)": _delta(ma['avg'], mb['avg'])},
-                    {"Метрика": "Пік",
-                     "A": f"{ma['peak']:,.0f}", "B": f"{mb['peak']:,.0f}",
-                     "Δ (A vs B)": _delta(ma['peak'], mb['peak'])},
-                    {"Метрика": "Днів з даними",
-                     "A": f"{ma['days']}", "B": f"{mb['days']}",
-                     "Δ (A vs B)": "—"},
-                    {"Метрика": "Погодження, %",
-                     "A": f"{ma['approval']:.1f}%" if ma['approval'] is not None else "—",
-                     "B": f"{mb['approval']:.1f}%" if mb['approval'] is not None else "—",
-                     "Δ (A vs B)": _delta(ma['approval'], mb['approval'])
-                        if ma['approval'] is not None and mb['approval'] is not None else "—"},
-                ]
-                st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
+            periods = []
+            for i in range(n_periods):
+                with cols[i]:
+                    default_idx = min(i, len(all_months_sorted) - 1)
+                    period = st.selectbox(
+                        f"Період {chr(65 + i)}",
+                        options=all_months_sorted,
+                        format_func=lambda x: pd.Period(x).strftime("%m.%Y"),
+                        index=default_idx,
+                        key=f"cmp_period_{i}",
+                    )
+                    periods.append(period)
 
-                daily_a = with_data(df[(df["month"] == period_a) & (df["operation"] == "Тотал")]).groupby("date")["value"].sum().reset_index()
-                daily_b = with_data(df[(df["month"] == period_b) & (df["operation"] == "Тотал")]).groupby("date")["value"].sum().reset_index()
-                if not daily_a.empty and not daily_b.empty:
-                    daily_a["day"] = daily_a["date"].dt.day
-                    daily_b["day"] = daily_b["date"].dt.day
-                    daily_a["period"] = pd.Period(period_a).strftime("%m.%Y")
-                    daily_b["period"] = pd.Period(period_b).strftime("%m.%Y")
-                    compare_days = pd.concat([
-                        daily_a[["day", "value", "period"]],
-                        daily_b[["day", "value", "period"]],
-                    ], ignore_index=True)
-                    fig_compare = px.line(
-                        compare_days, x="day", y="value", color="period", markers=True,
-                        labels={"day": "День місяця", "value": "Кількість", "period": "Період"},
-                        title="Порівняння по днях місяця (Тотал)",
-                    )
-                    fig_compare.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10))
-                    st.plotly_chart(fig_compare, use_container_width=True)
+            # ── Валідація унікальності ──
+            if len(set(periods)) < len(periods):
+                st.warning("⚠️ Оберіть різні періоди — є дублікати.")
+            else:
+                today_ym = today.strftime("%Y-%m")
+                any_current = today_ym in periods
 
-                st.markdown("**📊 Порівняння по операціях**")
-                ops_a = with_data(df[(df["month"] == period_a) & (df["operation"] != "Тотал")]).groupby("operation")["value"].sum()
-                ops_b = with_data(df[(df["month"] == period_b) & (df["operation"] != "Тотал")]).groupby("operation")["value"].sum()
-                ops_compare = pd.DataFrame({
-                    pd.Period(period_a).strftime("%m.%Y"): ops_a,
-                    pd.Period(period_b).strftime("%m.%Y"): ops_b,
-                }).fillna(0)
-                if not ops_compare.empty:
-                    ops_long = ops_compare.reset_index().melt(
-                        id_vars="operation", var_name="Період", value_name="Кількість",
+                # ── Спільна межа обрізання (якщо хоч один період — поточний) ──
+                cutoff_day = None
+                if any_current:
+                    cur_month_df = with_data(
+                        df[(df["month"] == today_ym) & (df["operation"] == "Тотал")]
                     )
-                    fig_ops_cmp = px.bar(
-                        ops_long, x="operation", y="Кількість", color="Період",
-                        barmode="group",
-                        labels={"operation": "Операція", "Кількість": "Кількість"},
-                        title="Порівняння операцій між періодами",
+                    cur_month_df = cur_month_df[cur_month_df["date"] <= today]
+                    if not cur_month_df.empty:
+                        cutoff_day = min(int(cur_month_df["date"].max().day), today.day)
+                    else:
+                        cutoff_day = today.day
+
+                def _apply_cutoff(frame, period_str, cutoff):
+                    if cutoff is None:
+                        return frame
+                    period_days = pd.Period(period_str).days_in_month
+                    eff = min(cutoff, period_days)
+                    return frame[frame["date"].dt.day <= eff]
+
+                def _eff_day(period_str, cutoff):
+                    if cutoff is None:
+                        return None
+                    return min(cutoff, pd.Period(period_str).days_in_month)
+
+                def _period_metrics(period_str, cutoff=None):
+                    mask = (df["month"] == period_str) & (df["operation"] == "Тотал")
+                    p_df = with_data(df[mask])
+                    p_df = p_df[p_df["date"] <= today]
+                    if p_df.empty:
+                        return None
+                    p_df = _apply_cutoff(p_df, period_str, cutoff)
+                    if p_df.empty:
+                        return None
+                    daily = p_df.groupby("date")["value"].sum()
+                    s_true = float(p_df["sum_true"].sum())
+                    s_false = float(p_df["sum_false"].sum())
+                    ratio = s_true + s_false
+                    return {
+                        "total": float(daily.sum()),
+                        "avg": float(daily.mean()) if not daily.empty else 0.0,
+                        "peak": float(daily.max()) if not daily.empty else 0.0,
+                        "days": int(len(daily)),
+                        "approval": (s_true / ratio * 100) if ratio > 0 else None,
+                    }
+
+                # ── Підписи для кожного періоду ──
+                labels = []
+                for p in periods:
+                    lbl = pd.Period(p).strftime("%m.%Y")
+                    eff = _eff_day(p, cutoff_day)
+                    if eff is not None:
+                        lbl += f" (до {eff:02d}.{pd.Period(p).month:02d})"
+                    labels.append(lbl)
+
+                # ── Підказка про обрізання ──
+                if any_current and cutoff_day is not None:
+                    parts = []
+                    for p in periods:
+                        eff = _eff_day(p, cutoff_day)
+                        parts.append(
+                            f"**{pd.Period(p).strftime('%m.%Y')}** до **{eff:02d}-го дня**"
+                        )
+                    st.caption(
+                        f"⚖️ Один із періодів ще не завершено. Для коректного порівняння обрізано: "
+                        + ", ".join(parts)
+                        + " (стільки днів уже пройшло в поточному місяці)."
                     )
-                    fig_ops_cmp.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10))
-                    st.plotly_chart(fig_ops_cmp, use_container_width=True)
+                else:
+                    st.caption("📊 Усі обрані періоди завершені — порівняння повних місяців.")
+
+                metrics = [_period_metrics(p, cutoff_day) for p in periods]
+
+                if all(m is None for m in metrics):
+                    st.info("Жоден із вибраних періодів не має даних для порівняння.")
+
+                elif n_periods == 2:
+                    # ========================================================
+                    # РЕЖИМ 2 ПЕРІОДІВ: з дельтою
+                    # ========================================================
+                    ma, mb = metrics[0], metrics[1]
+                    if ma is None or mb is None:
+                        st.info("Один із періодів не має даних для порівняння.")
+                    else:
+                        def _delta(a, b):
+                            if a is None or b is None or b == 0:
+                                return "—"
+                            return f"{(a - b) / b * 100:+.1f}%"
+
+                        label_a, label_b = labels[0], labels[1]
+                        comp_rows = [
+                            {"Метрика": "Всього",
+                             "A": f"{ma['total']:,.0f}", "B": f"{mb['total']:,.0f}",
+                             "Δ (A vs B)": _delta(ma['total'], mb['total'])},
+                            {"Метрика": "Середнє/день",
+                             "A": f"{ma['avg']:.0f}", "B": f"{mb['avg']:.0f}",
+                             "Δ (A vs B)": _delta(ma['avg'], mb['avg'])},
+                            {"Метрика": "Пік",
+                             "A": f"{ma['peak']:,.0f}", "B": f"{mb['peak']:,.0f}",
+                             "Δ (A vs B)": _delta(ma['peak'], mb['peak'])},
+                            {"Метрика": "Днів з даними",
+                             "A": f"{ma['days']}", "B": f"{mb['days']}",
+                             "Δ (A vs B)": "—"},
+                            {"Метрика": "Погодження, %",
+                             "A": f"{ma['approval']:.1f}%" if ma['approval'] is not None else "—",
+                             "B": f"{mb['approval']:.1f}%" if mb['approval'] is not None else "—",
+                             "Δ (A vs B)": _delta(ma['approval'], mb['approval'])
+                                if ma['approval'] is not None and mb['approval'] is not None else "—"},
+                        ]
+
+                        st.markdown(f"**A** = `{label_a}` &nbsp;&nbsp;·&nbsp;&nbsp; **B** = `{label_b}`")
+                        st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
+
+                        # ── Спільний графік по днях ──
+                        daily_data = []
+                        for p, lbl in zip(periods, labels):
+                            daily_df = with_data(df[(df["month"] == p) & (df["operation"] == "Тотал")])
+                            daily_df = daily_df[daily_df["date"] <= today]
+                            daily_df = _apply_cutoff(daily_df, p, cutoff_day)
+                            if daily_df.empty:
+                                continue
+                            daily_agg = daily_df.groupby("date")["value"].sum().reset_index()
+                            daily_agg["day"] = daily_agg["date"].dt.day
+                            daily_agg["period"] = lbl
+                            daily_data.append(daily_agg[["day", "value", "period"]])
+
+                        if daily_data:
+                            compare_days = pd.concat(daily_data, ignore_index=True)
+                            fig_compare = px.line(
+                                compare_days, x="day", y="value", color="period", markers=True,
+                                labels={"day": "День місяця", "value": "Кількість", "period": "Період"},
+                                title="Порівняння по днях місяця (Тотал)",
+                            )
+                            fig_compare.update_layout(height=400, margin=dict(l=10, r=10, t=40, b=10))
+                            st.plotly_chart(fig_compare, use_container_width=True)
+
+                        # ── Спільний графік по операціях ──
+                        st.markdown("**📊 Порівняння по операціях**")
+                        ops_data_dict = {}
+                        for p, lbl in zip(periods, labels):
+                            ops_df = with_data(df[(df["month"] == p) & (df["operation"] != "Тотал")])
+                            ops_df = ops_df[ops_df["date"] <= today]
+                            ops_df = _apply_cutoff(ops_df, p, cutoff_day)
+                            ops_data_dict[lbl] = ops_df.groupby("operation")["value"].sum()
+
+                        ops_compare = pd.DataFrame(ops_data_dict).fillna(0)
+                        if not ops_compare.empty:
+                            ops_long = ops_compare.reset_index().melt(
+                                id_vars="operation", var_name="Період", value_name="Кількість",
+                            )
+                            fig_ops_cmp = px.bar(
+                                ops_long, x="operation", y="Кількість", color="Період",
+                                barmode="group",
+                                labels={"operation": "Операція", "Кількість": "Кількість"},
+                                title="Порівняння операцій між періодами",
+                            )
+                            fig_ops_cmp.update_layout(height=400, margin=dict(l=10, r=10, t=20, b=10))
+                            st.plotly_chart(fig_ops_cmp, use_container_width=True)
+
+                else:
+                    # ========================================================
+                    # РЕЖИМ 3–6 ПЕРІОДІВ: без дельти, per-period таблиця + графік
+                    # ========================================================
+                    st.info(
+                        "ℹ️ Дельта доступна лише при порівнянні **2 періодів**. "
+                        "Для 3+ періодів показуються окремі таблиці та графіки для кожного."
+                    )
+
+                    for i, (p, lbl, m) in enumerate(zip(periods, labels, metrics)):
+                        st.markdown(f"### {chr(65 + i)} · {lbl}")
+
+                        if m is None:
+                            st.warning("Немає даних за цей період.")
+                            st.divider()
+                            continue
+
+                        period_metrics_rows = [
+                            {"Метрика": "Всього", "Значення": f"{m['total']:,.0f}"},
+                            {"Метрика": "Середнє/день", "Значення": f"{m['avg']:.0f}"},
+                            {"Метрика": "Пік", "Значення": f"{m['peak']:,.0f}"},
+                            {"Метрика": "Днів з даними", "Значення": f"{m['days']}"},
+                            {"Метрика": "Погодження, %",
+                             "Значення": f"{m['approval']:.1f}%" if m['approval'] is not None else "—"},
+                        ]
+
+                        col_tbl, col_chart = st.columns([1, 2])
+                        with col_tbl:
+                            st.dataframe(
+                                pd.DataFrame(period_metrics_rows),
+                                use_container_width=True, hide_index=True,
+                            )
+                        with col_chart:
+                            daily_df = with_data(df[(df["month"] == p) & (df["operation"] == "Тотал")])
+                            daily_df = daily_df[daily_df["date"] <= today]
+                            daily_df = _apply_cutoff(daily_df, p, cutoff_day)
+                            if not daily_df.empty:
+                                daily_agg = daily_df.groupby("date")["value"].sum().reset_index()
+                                daily_agg["day"] = daily_agg["date"].dt.day
+                                fig_period = px.line(
+                                    daily_agg, x="day", y="value", markers=True,
+                                    labels={"day": "День місяця", "value": "Кількість"},
+                                    title=f"Динаміка по днях — {lbl}",
+                                )
+                                fig_period.update_layout(height=350, margin=dict(l=10, r=10, t=40, b=10))
+                                st.plotly_chart(fig_period, use_container_width=True, key=f"cmp_chart_{i}")
+                            else:
+                                st.info("Немає даних для графіка.")
+
+                        st.divider()
+
+                    # ── Спільний графік по операціях для всіх періодів ──
+                    st.markdown("**📊 Порівняння по операціях (усі періоди)**")
+                    ops_data_dict = {}
+                    for p, lbl in zip(periods, labels):
+                        ops_df = with_data(df[(df["month"] == p) & (df["operation"] != "Тотал")])
+                        ops_df = ops_df[ops_df["date"] <= today]
+                        ops_df = _apply_cutoff(ops_df, p, cutoff_day)
+                        ops_data_dict[lbl] = ops_df.groupby("operation")["value"].sum()
+
+                    ops_compare = pd.DataFrame(ops_data_dict).fillna(0)
+                    if not ops_compare.empty:
+                        ops_long = ops_compare.reset_index().melt(
+                            id_vars="operation", var_name="Період", value_name="Кількість",
+                        )
+                        fig_ops_cmp = px.bar(
+                            ops_long, x="operation", y="Кількість", color="Період",
+                            barmode="group",
+                            labels={"operation": "Операція", "Кількість": "Кількість"},
+                            title="Порівняння операцій між періодами",
+                        )
+                        fig_ops_cmp.update_layout(height=450, margin=dict(l=10, r=10, t=20, b=10))
+                        st.plotly_chart(fig_ops_cmp, use_container_width=True)
 
 
 # ============================================================
