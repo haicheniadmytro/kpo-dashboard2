@@ -47,6 +47,8 @@ def _get_build_info():
 # 0b. Історія останніх 10 змін
 # ============================================================
 RECENT_CHANGES = [
+    "**v1.23** — Overview: покращено читабельність міток і заголовків блоків (світліший колір, трохи більший шрифт, більші іконки «?»).",
+    "**v1.22** — «Динаміка» → «Порівняння по роках (YoY)»: пунктирна лінія аналогічного періоду торік, коли увімкнено «Показати аналогічний період торік».",
     "**v1.21** — Кнопка «Скинути всі фільтри» тепер повертає поля «Мін. кількість за день» та «% погоджень» до 0 / 0–100 (раніше значення поверталися після зміни місяця).",
     "**v1.20** — Виправлено регресії v1.19: (1) в режимі «Тотал» повернено «Найактивніша операція» і «Коефіцієнт погоджень по операціях» — `period_ops` тепер на повному наборі операцій з урахуванням day-фільтрів (раніше був порожній, бо `filtered` у режимі «Тотал» містить лише рядки «Тотал»). (2) Прибрано чекбокс «Показати дельту до попереднього дня» та відповідну лінію/другу вісь. (3) Прибрано Drill-down теплових карт (selectbox + таблиця) в обох вкладках — «Навантаження» і «Операції».",
     "**v1.19** — Виправлено 5 багів v1.18: квартал (усі 3 місяці), слайдери→поля, drill-down подвоєння, day-фільтри на period_ops, розділено «даних немає» vs «фільтри відсіяли».",
@@ -54,9 +56,6 @@ RECENT_CHANGES = [
     "**v1.17** — «Порівняння періодів»: спільний графік «Порівняльна динаміка по днях».",
     "**v1.16** — «Порівняння періодів»: 2–6 місяців одночасно.",
     "**v1.15** — «Порівняння періодів»: обрізання до тієї ж дати.",
-    "**v1.14** — «Накопичувальна сума»: окрема лінія для кожної операції.",
-    "**v1.13** — Виправлено: майбутні дати, MoM/YoY, банер.",
-    "**v1.12** — Виправлено: невалідні дати, тихі пропуски.",
 ]
 
 MAX_RECENT_CHANGES = 10
@@ -1142,8 +1141,8 @@ st.markdown(f"""
     }}
     .metric-group:hover {{ border-left-color: {KPO_AMBER}; }}
     .metric-group-title {{
-        font-size: 0.63rem !important; font-weight: 600; text-transform: uppercase;
-        letter-spacing: 0.08em; color: {KPO_TEXT_MUTED} !important;
+        font-size: 0.7rem !important; font-weight: 600; text-transform: uppercase;
+        letter-spacing: 0.08em; color: #b4c2d3 !important;
         margin-bottom: 0.45rem; padding-bottom: 0.32rem; border-bottom: 1px solid {KPO_BORDER};
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }}
@@ -1153,8 +1152,8 @@ st.markdown(f"""
     }}
     .group-metric-row + .group-metric-row {{ border-top: 1px solid rgba(31, 39, 51, 0.55); }}
     .group-metric-label {{
-        font-size: 0.7rem !important; font-weight: 500; color: {KPO_TEXT_MUTED} !important;
-        flex: 1 1 auto; min-width: 0; line-height: 1.25;
+        font-size: 0.8rem !important; font-weight: 500; color: #b8c3d1 !important;
+        flex: 1 1 auto; min-width: 0; line-height: 1.3; letter-spacing: 0.01em;
         overflow-wrap: break-word; word-break: break-word;
     }}
     .group-metric-value {{
@@ -1173,7 +1172,7 @@ st.markdown(f"""
     }}
     .help-icon {{
         display: inline-block; background: rgba(0, 217, 255, 0.15); border-radius: 50%;
-        width: 15px; height: 15px; text-align: center; line-height: 15px; font-size: 0.62rem;
+        width: 16px; height: 16px; text-align: center; line-height: 16px; font-size: 0.7rem;
         color: {KPO_CYAN} !important; cursor: help; margin-left: 3px; flex-shrink: 0;
     }}
     .stTabs [data-baseweb="tab-list"] {{ gap: 4px; border-bottom: 1px solid {KPO_BORDER}; }}
@@ -1502,6 +1501,22 @@ with tab2:
                           labels={"month_label": "Місяць", "value": "Кількість", "year": "Рік"},
                           title="Порівняння місячних сум по роках",
                           category_orders={"month_label": month_axis_order})
+
+        # Пунктирна лінія: аналогічний період торік (лише коли увімкнено чекбокс)
+        if prev_year_range is not None:
+            prev_yoy_df = with_data(df[(df["operation"] == "Тотал")
+                                       & (df["date"] >= prev_year_range[0])
+                                       & (df["date"] <= prev_year_range[1])]).copy()
+            if not prev_yoy_df.empty:
+                prev_yoy_monthly = prev_yoy_df.groupby("month")["value"].sum().reset_index().sort_values("month")
+                prev_yoy_monthly["month_label"] = prev_yoy_monthly["month"].apply(
+                    lambda x: pd.Period(x).strftime("%b"))
+                prev_year_num = prev_year_range[0].year
+                fig_yoy.add_scatter(x=prev_yoy_monthly["month_label"], y=prev_yoy_monthly["value"],
+                    mode="lines+markers", name=f"Торік ({prev_year_num}), аналогічний період",
+                    line=dict(color=KPO_BLUE, width=2, dash="dash"), opacity=0.6,
+                    marker=dict(size=6, opacity=0.6))
+
         fig_yoy.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
         st.plotly_chart(fig_yoy, use_container_width=True)
 
