@@ -1495,27 +1495,35 @@ with tab2:
         yoy_monthly = yoy_data.groupby(["year", "month"])["value"].sum().reset_index()
         yoy_monthly["month_num"] = yoy_monthly["month"].apply(lambda x: pd.Period(x).month)
         yoy_monthly["month_label"] = yoy_monthly["month"].apply(lambda x: pd.Period(x).strftime("%b"))
+
+        # Пунктир: весь минулий рік для найновішого року на графіку (лише коли увімкнено чекбокс)
+        prev_yoy_monthly = None
+        if compare_prev_year and not yoy_monthly.empty:
+            latest_year = int(yoy_monthly["year"].max())
+            prev_df = with_data(df[(df["operation"] == "Тотал") & (df["year"] == latest_year - 1)]).copy()
+            if not prev_df.empty:
+                prev_yoy_monthly = prev_df.groupby("month")["value"].sum().reset_index()
+                prev_yoy_monthly["month_num"] = prev_yoy_monthly["month"].apply(lambda x: pd.Period(x).month)
+                prev_yoy_monthly["month_label"] = prev_yoy_monthly["month"].apply(lambda x: pd.Period(x).strftime("%b"))
+                prev_yoy_monthly["year"] = latest_year - 1
+
+        # Порядок осі X: 12 місяців, щоб пунктир і суцільні лінії були на одній шкалі
+        axis_frames = [yoy_monthly] + ([prev_yoy_monthly] if prev_yoy_monthly is not None else [])
+        all_monthly = pd.concat(axis_frames, ignore_index=True).sort_values(["year", "month_num"])
+        month_axis_order = all_monthly.drop_duplicates("month_num").sort_values("month_num")["month_label"].tolist()
+
         yoy_monthly = yoy_monthly.sort_values(["year", "month_num"])
-        month_axis_order = yoy_monthly.drop_duplicates("month_num").sort_values("month_num")["month_label"].tolist()
         fig_yoy = px.line(yoy_monthly, x="month_label", y="value", color="year", markers=True,
                           labels={"month_label": "Місяць", "value": "Кількість", "year": "Рік"},
                           title="Порівняння місячних сум по роках",
                           category_orders={"month_label": month_axis_order})
 
-        # Пунктирна лінія: аналогічний період торік (лише коли увімкнено чекбокс)
-        if prev_year_range is not None:
-            prev_yoy_df = with_data(df[(df["operation"] == "Тотал")
-                                       & (df["date"] >= prev_year_range[0])
-                                       & (df["date"] <= prev_year_range[1])]).copy()
-            if not prev_yoy_df.empty:
-                prev_yoy_monthly = prev_yoy_df.groupby("month")["value"].sum().reset_index().sort_values("month")
-                prev_yoy_monthly["month_label"] = prev_yoy_monthly["month"].apply(
-                    lambda x: pd.Period(x).strftime("%b"))
-                prev_year_num = prev_year_range[0].year
-                fig_yoy.add_scatter(x=prev_yoy_monthly["month_label"], y=prev_yoy_monthly["value"],
-                    mode="lines+markers", name=f"Торік ({prev_year_num}), аналогічний період",
-                    line=dict(color=KPO_BLUE, width=2, dash="dash"), opacity=0.6,
-                    marker=dict(size=6, opacity=0.6))
+        if prev_yoy_monthly is not None:
+            prev_yoy_monthly = prev_yoy_monthly.sort_values("month_num")
+            fig_yoy.add_scatter(x=prev_yoy_monthly["month_label"], y=prev_yoy_monthly["value"],
+                mode="lines+markers", name=f"Торік ({latest_year - 1}), весь рік",
+                line=dict(color=KPO_BLUE, width=2, dash="dash"), opacity=0.6,
+                marker=dict(size=6, opacity=0.6))
 
         fig_yoy.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
         st.plotly_chart(fig_yoy, use_container_width=True)
