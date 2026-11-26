@@ -47,6 +47,7 @@ def _get_build_info():
 # 0b. Історія останніх 10 змін
 # ============================================================
 RECENT_CHANGES = [
+    "**v1.21** — Кнопка «Скинути всі фільтри» тепер повертає поля «Мін. кількість за день» та «% погоджень» до 0 / 0–100 (раніше значення поверталися після зміни місяця).",
     "**v1.20** — Виправлено регресії v1.19: (1) в режимі «Тотал» повернено «Найактивніша операція» і «Коефіцієнт погоджень по операціях» — `period_ops` тепер на повному наборі операцій з урахуванням day-фільтрів (раніше був порожній, бо `filtered` у режимі «Тотал» містить лише рядки «Тотал»). (2) Прибрано чекбокс «Показати дельту до попереднього дня» та відповідну лінію/другу вісь. (3) Прибрано Drill-down теплових карт (selectbox + таблиця) в обох вкладках — «Навантаження» і «Операції».",
     "**v1.19** — Виправлено 5 багів v1.18: квартал (усі 3 місяці), слайдери→поля, drill-down подвоєння, day-фільтри на period_ops, розділено «даних немає» vs «фільтри відсіяли».",
     "**v1.18** — Фільтри й аналіз: діапазон % погоджень і мін. кількості, «Швидкі періоди», торішній період, дельти DoD, drill-down теплових карт.",
@@ -56,7 +57,6 @@ RECENT_CHANGES = [
     "**v1.14** — «Накопичувальна сума»: окрема лінія для кожної операції.",
     "**v1.13** — Виправлено: майбутні дати, MoM/YoY, банер.",
     "**v1.12** — Виправлено: невалідні дати, тихі пропуски.",
-    "**v1.11** — Overview: Стабільність і Коефіцієнт погоджень — окремі блоки.",
 ]
 
 MAX_RECENT_CHANGES = 10
@@ -760,6 +760,20 @@ def _list_available_periods(period_type, df_dates):
     return result
 
 
+# ---- Callback скидання фільтрів по днях (виконується ДО перерендеру) ----
+def _reset_day_filters():
+    st.session_state["min_qty_input"] = 0
+    st.session_state["pct_min_input"] = 0.0
+    st.session_state["pct_max_input"] = 100.0
+
+
+def _reset_all_filters():
+    for k in list(st.session_state.keys()):
+        if k.startswith("q_") or k == "period_mode":
+            del st.session_state[k]
+    _reset_day_filters()
+
+
 st.sidebar.header("Фільтри")
 period_mode = st.sidebar.radio("Період", options=["За місяцями", "Швидкі періоди"], index=0, key="period_mode")
 
@@ -892,11 +906,7 @@ if smooth_enabled:
     smooth_window = st.sidebar.selectbox("Вікно згладжування (дні)", [3, 5, 7, 14], index=2)
 
 st.sidebar.divider()
-if st.sidebar.button("🔄 Скинути всі фільтри", use_container_width=True):
-    for k in list(st.session_state.keys()):
-        if k.startswith("q_") or k.startswith("min_qty") or k.startswith("pct_") or k == "period_mode":
-            del st.session_state[k]
-    st.rerun()
+st.sidebar.button("🔄 Скинути всі фільтри", use_container_width=True, on_click=_reset_all_filters)
 
 
 # ============================================================
